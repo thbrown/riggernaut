@@ -1,0 +1,111 @@
+.component-panel {
+  width: 220px;
+  background: rgba(255, 255, 255, 0.05);
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  overflow-y: auto;
+  padding: 0.75rem;
+  flex-shrink: 0;
+}
+
+.component-panel__title {
+  font-size: 0.9rem;
+  color: #88ccff;
+  margin-bottom: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.component-panel__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.component-panel__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem;
+  border-radius: 4px;
+  cursor: grab;
+  transition: background 0.1s;
+}
+
+.component-panel__item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.component-panel__item:hover .component-panel__tooltip {
+  display: block;
+}
+
+.component-panel__item--active {
+  background: rgba(136, 204, 255, 0.15);
+  outline: 1px solid rgba(136, 204, 255, 0.4);
+}
+
+.component-panel__item--disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.component-panel__item--disabled:hover {
+  background: transparent;
+}
+
+.component-panel__item:active:not(.component-panel__item--disabled) {
+  cursor: grabbing;
+}
+
+.component-panel__info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.component-panel__name {
+  font-size: 0.75rem;
+  color: #ccc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.component-panel__cost {
+  font-size: 0.7rem;
+  color: #88ccff;
+  font-weight: 600;
+}
+
+/* Tooltip — inline expand below item */
+.component-panel__tooltip {
+  display: none;
+  width: 100%;
+  padding: 0.35rem 0.25rem 0.15rem;
+}
+
+.component-panel__tooltip-name {
+  display: none;
+}
+
+.component-panel__tooltip-desc {
+  font-size: 0.65rem;
+  color: #aaa;
+  line-height: 1.3;
+  margin-bottom: 0.3rem;
+}
+
+.component-panel__tooltip-stats {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.6rem;
+  color: #999;
+}
+
+.component-panel__tooltip-extra {
+  font-size: 0.6rem;
+  color: #ffcc00;
+  margin-top: 0.2rem;
+}

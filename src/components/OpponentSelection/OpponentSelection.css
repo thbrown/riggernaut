@@ -1,0 +1,100 @@
+.opponent-select {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: #0a0a1a;
+  color: #e0e0e0;
+  gap: 2rem;
+}
+
+.opponent-select__title {
+  color: #88ccff;
+  font-size: 1.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+}
+
+.opponent-select__grid {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.opponent-select__card {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 1.5rem;
+  width: 220px;
+  text-align: center;
+}
+
+.opponent-select__card h3 {
+  color: #88ccff;
+  margin-bottom: 0.5rem;
+}
+
+.opponent-select__desc {
+  font-size: 0.8rem;
+  color: #888;
+  line-height: 1.4;
+  margin-bottom: 1rem;
+}
+
+.opponent-select__counter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+}
+
+.opponent-select__counter button {
+  width: 32px;
+  height: 32px;
+  font-size: 1.2rem;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #ccc;
+  border-radius: 4px;
+}
+
+.opponent-select__counter button:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.opponent-select__counter span {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #88ccff;
+  min-width: 30px;
+}
+
+.opponent-select__actions {
+  display: flex;
+  gap: 1rem;
+}
+
+.opponent-select__actions button {
+  padding: 0.6rem 1.5rem;
+  font-size: 0.9rem;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #ccc;
+  border-radius: 4px;
+}
+
+.opponent-select__actions button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.opponent-select__go {
+  background: rgba(136, 204, 255, 0.15) !important;
+  border-color: rgba(136, 204, 255, 0.4) !important;
+  color: #88ccff !important;
+}
+
+.opponent-select__actions button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}

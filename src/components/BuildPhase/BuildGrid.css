@@ -1,0 +1,93 @@
+.build-grid__wrapper {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 1rem;
+}
+
+.build-grid {
+  display: grid;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.build-grid__cell {
+  width: 50px;
+  height: 50px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  position: relative;
+  transition: background 0.1s;
+}
+
+.build-grid__cell--hover {
+  background: rgba(136, 204, 255, 0.15);
+}
+
+.build-grid__component {
+  position: absolute;
+  inset: 0;
+  cursor: grab;
+}
+
+.build-grid__component:active {
+  cursor: grabbing;
+}
+
+.build-grid__component--unattached {
+  filter: saturate(0.3);
+}
+
+.build-grid__component--unattached::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 0, 0, 0.35);
+  border: 2px solid rgba(255, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+.build-grid__component--selected {
+  outline: 2px solid #88ccff;
+  outline-offset: -2px;
+  z-index: 1;
+}
+
+.build-grid__actions {
+  position: absolute;
+  top: -28px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 2px;
+  z-index: 10;
+}
+
+.build-grid__action-btn {
+  width: 24px;
+  height: 24px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #333;
+  color: #fff;
+  border: 1px solid #555;
+  border-radius: 3px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.build-grid__action-btn:hover {
+  background: #555;
+}
+
+.build-grid__action-btn--remove {
+  background: #663333;
+}
+
+.build-grid__action-btn--remove:hover {
+  background: #994444;
+}

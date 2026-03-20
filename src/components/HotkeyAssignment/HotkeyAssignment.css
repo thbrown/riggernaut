@@ -1,0 +1,323 @@
+.hotkey-assignment {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #0a0a1a;
+  color: #e0e0e0;
+}
+
+.hotkey-assignment__content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.hotkey-assignment__sidebar {
+  width: 280px;
+  padding: 1rem;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.hotkey-assignment__sidebar h3 {
+  color: #88ccff;
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.hotkey-assignment__hint {
+  font-size: 0.8rem;
+  color: #888;
+  line-height: 1.4;
+}
+
+.hotkey-assignment__list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.hotkey-assignment__item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.hotkey-assignment__item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.hotkey-assignment__item--selected {
+  background: rgba(136, 204, 255, 0.15);
+  outline: 1px solid rgba(136, 204, 255, 0.4);
+}
+
+.hotkey-assignment__name {
+  font-size: 0.8rem;
+  flex: 1;
+}
+
+.hotkey-assignment__key {
+  font-size: 0.75rem;
+  color: #88ccff;
+  font-family: monospace;
+  min-width: 40px;
+  text-align: right;
+}
+
+.hotkey-assignment__actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.hotkey-assignment__actions button {
+  flex: 1;
+  padding: 0.5rem;
+  font-size: 0.85rem;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #ccc;
+  border-radius: 4px;
+}
+
+.hotkey-assignment__actions button:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.hotkey-assignment__proceed {
+  background: rgba(136, 204, 255, 0.15) !important;
+  border-color: rgba(136, 204, 255, 0.4) !important;
+  color: #88ccff !important;
+}
+
+.hotkey-assignment__grid-area {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hotkey-assignment__grid {
+  display: grid;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.hotkey-assignment__cell {
+  position: relative;
+  width: 50px;
+  height: 50px;
+}
+
+.hotkey-assignment__cell--selectable {
+  cursor: pointer;
+}
+
+.hotkey-assignment__cell--selectable:hover {
+  outline: 2px solid rgba(136, 204, 255, 0.5);
+  outline-offset: -2px;
+  z-index: 1;
+}
+
+.hotkey-assignment__cell--selected {
+  outline: 2px solid #88ccff;
+  outline-offset: -2px;
+  z-index: 2;
+}
+
+.hotkey-assignment__label {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  font-size: 10px;
+  font-family: monospace;
+  font-weight: 700;
+  padding: 1px 3px;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.hotkey-assignment__label--center {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.hotkey-assignment__label--edge {
+  font-size: 8px;
+  padding: 0 2px;
+  line-height: 1.2;
+  min-width: 0;
+}
+
+/* --- Hotkey Order Drawer --- */
+
+.hotkey-order-drawer {
+  position: relative;
+  width: 0;
+  transition: width 0.2s ease;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.hotkey-order-drawer--open {
+  width: 240px;
+}
+
+.hotkey-order-drawer__toggle {
+  position: absolute;
+  left: -56px;
+  top: 12px;
+  z-index: 5;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.7rem;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #aaa;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.hotkey-order-drawer__toggle:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #ccc;
+}
+
+.hotkey-order-drawer__body {
+  width: 240px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  overflow-y: auto;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.hotkey-order-drawer__body h3 {
+  color: #88ccff;
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin: 0;
+}
+
+.hotkey-order-drawer__hint {
+  font-size: 0.75rem;
+  color: #888;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.hotkey-order-drawer__empty {
+  font-size: 0.8rem;
+  color: #666;
+  font-style: italic;
+}
+
+.hotkey-order-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.hotkey-order-group__header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #88ccff;
+  font-family: monospace;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid rgba(136, 204, 255, 0.15);
+}
+
+.hotkey-order-group__count {
+  font-size: 0.65rem;
+  font-weight: 400;
+  color: #ffaa44;
+  font-family: sans-serif;
+}
+
+.hotkey-order-group__item {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.25rem;
+  border-radius: 3px;
+  font-size: 0.75rem;
+}
+
+.hotkey-order-group__item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.hotkey-order-group__rank {
+  font-size: 0.65rem;
+  color: #666;
+  font-family: monospace;
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.hotkey-order-group__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #ccc;
+}
+
+.hotkey-order-group__action {
+  font-size: 0.65rem;
+  color: #999;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+
+.hotkey-order-group__arrows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.hotkey-order-group__arrows button {
+  width: 18px;
+  height: 14px;
+  padding: 0;
+  font-size: 0.6rem;
+  line-height: 1;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #aaa;
+  border-radius: 2px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hotkey-order-group__arrows button:hover:not(:disabled) {
+  background: rgba(136, 204, 255, 0.2);
+  color: #88ccff;
+}
+
+.hotkey-order-group__arrows button:disabled {
+  opacity: 0.25;
+  cursor: default;
+}

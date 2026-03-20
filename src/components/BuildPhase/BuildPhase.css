@@ -1,0 +1,65 @@
+.build-phase {
+  display: flex;
+  height: 100vh;
+  background: #0a0a1a;
+}
+
+.build-phase__main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.build-phase__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.build-phase__funds {
+  font-size: 1.1rem;
+  color: #88ccff;
+}
+
+.build-phase__funds--negative {
+  color: #ff4444;
+  font-weight: 700;
+}
+
+.build-phase__actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.build-phase__btn {
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #ccc;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.build-phase__btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.build-phase__btn--primary {
+  background: rgba(136, 204, 255, 0.15);
+  border-color: rgba(136, 204, 255, 0.4);
+  color: #88ccff;
+}
+
+.build-phase__btn--primary:hover:not(:disabled) {
+  background: rgba(136, 204, 255, 0.25);
+}
+
+.build-phase__btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
