@@ -27,6 +27,8 @@ export interface ShipState {
   prevAngle: number;
   /** Previous center of mass (world-space) for camera interpolation */
   prevCom?: { x: number; y: number };
+  /** Per-body interpolation state for multi-body (hinged) ships */
+  bodyInterp?: Map<number, { prevPos: { x: number; y: number }; prevAngle: number }>;
 }
 
 export class BattleSimulation {
@@ -45,6 +47,8 @@ export class BattleSimulation {
   hingeJoints: HingeJoint[] = [];
   decouplers: DecouplerState[] = [];
   rng = new DeterministicRng();
+  /** Next collision group bit for same-ship filtering (bits 1-15) */
+  private nextShipGroupBit = 1;
 
   constructor(input: InputManager) {
     this.input = input;
@@ -149,6 +153,7 @@ export class BattleSimulation {
       isPlayer,
       prevPosition: { x: offsetX, y: offsetY },
       prevAngle: 0,
+      bodyInterp: new Map([[body.handle, { prevPos: { x: offsetX, y: offsetY }, prevAngle: 0 }]]),
     };
 
     this.ships.push(ship);
@@ -203,11 +208,19 @@ export class BattleSimulation {
 
     const owner = isPlayer ? 'player' as const : 'ai' as const;
     const allComponents: ComponentInstance[] = [];
-    const sectionBodies: Array<{ body: RAPIER.RigidBody; comps: typeof blueprint.components }> = [];
+    const sectionBodies: Array<{ body: RAPIER.RigidBody; comps: typeof blueprint.components; centroidX: number; centroidY: number }> = [];
 
     for (const section of sections) {
+      // Compute this section's own centroid (grid coords)
+      const secCx = section.comps.reduce((s, c) => s + c.gridX, 0) / section.comps.length;
+      const secCy = section.comps.reduce((s, c) => s + c.gridY, 0) / section.comps.length;
+
+      // Position body at world offset + section centroid relative to global centroid
+      const bodyX = offsetX + (secCx - gcx) * TILE_SIZE;
+      const bodyY = offsetY + (secCy - gcy) * TILE_SIZE;
+
       const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(offsetX, offsetY)
+        .setTranslation(bodyX, bodyY)
         .setAngularDamping(0)
         .setLinearDamping(0)
         .setCanSleep(false);
@@ -215,8 +228,9 @@ export class BattleSimulation {
 
       for (const comp of section.comps) {
         const def = getComponentDef(comp.type as ComponentType);
-        const localX = (comp.gridX - gcx) * TILE_SIZE;
-        const localY = (comp.gridY - gcy) * TILE_SIZE;
+        // Collider offset relative to section centroid (not global centroid)
+        const localX = (comp.gridX - secCx) * TILE_SIZE;
+        const localY = (comp.gridY - secCy) * TILE_SIZE;
 
         const colliderDesc = RAPIER.ColliderDesc.cuboid(TILE_SIZE / 2, TILE_SIZE / 2)
           .setTranslation(localX, localY)
@@ -252,7 +266,7 @@ export class BattleSimulation {
         }
       }
 
-      sectionBodies.push({ body, comps: section.comps });
+      sectionBodies.push({ body, comps: section.comps, centroidX: secCx, centroidY: secCy });
     }
 
     // Create joints for each hinge component
@@ -272,12 +286,14 @@ export class BattleSimulation {
 
       const sectionIndices = [...adjacentSections];
       if (sectionIndices.length < 2) {
+        // Hinge only touches one section — attach as a regular collider
         const si = sectionIndices[0] ?? 0;
-        const body = sectionBodies[si].body;
+        const sec = sectionBodies[si];
+        const body = sec.body;
         const def = getComponentDef(hingeComp.type as ComponentType);
-        const localX = (hingeComp.gridX - gcx) * TILE_SIZE;
-        const localY = (hingeComp.gridY - gcy) * TILE_SIZE;
-        const colliderDesc = RAPIER.ColliderDesc.cuboid(TILE_SIZE / 2, TILE_SIZE / 2)
+        const localX = (hingeComp.gridX - sec.centroidX) * TILE_SIZE;
+        const localY = (hingeComp.gridY - sec.centroidY) * TILE_SIZE;
+        const colliderDesc = RAPIER.ColliderDesc.ball(TILE_SIZE / 2)
           .setTranslation(localX, localY)
           .setDensity(def.mass)
           .setFriction(0)
@@ -293,28 +309,64 @@ export class BattleSimulation {
         continue;
       }
 
-      const bodyA = sectionBodies[sectionIndices[0]].body;
-      const bodyB = sectionBodies[sectionIndices[1]].body;
+      const secA = sectionBodies[sectionIndices[0]];
+      const secB = sectionBodies[sectionIndices[1]];
+      const bodyA = secA.body;
+      const bodyB = secB.body;
 
-      const anchorX = (hingeComp.gridX - gcx) * TILE_SIZE;
-      const anchorY = (hingeComp.gridY - gcy) * TILE_SIZE;
+      // Anchor relative to each section's own centroid
+      const anchorAX = (hingeComp.gridX - secA.centroidX) * TILE_SIZE;
+      const anchorAY = (hingeComp.gridY - secA.centroidY) * TILE_SIZE;
+      const anchorBX = (hingeComp.gridX - secB.centroidX) * TILE_SIZE;
+      const anchorBY = (hingeComp.gridY - secB.centroidY) * TILE_SIZE;
 
       const maxAngle = hingeComp.type === ComponentType.Hinge90
         ? Math.PI / 2
         : Math.PI;
 
+      // Compute hinge starting angle (matches getHingeStartAngleRad in ComponentRenderer)
+      // 90° hinge: step 0 = East (0), step 1 = South (π/2)
+      // 180° hinge: step 0 = East (0), step 1 = South (π/2), step 2 = North (-π/2)
+      const hingeStep = hingeComp.hingeStartAngle ?? 0;
+      let startAngle = 0;
+      if (hingeComp.type === ComponentType.Hinge90) {
+        startAngle = [0, Math.PI / 2][hingeStep % 2];
+      } else {
+        startAngle = [0, Math.PI / 2, -Math.PI / 2][hingeStep % 3];
+      }
+
+      // Rotate body B by start angle around the hinge point
+      if (startAngle !== 0) {
+        const hingeWorldX = bodyA.translation().x + anchorAX * Math.cos(bodyA.rotation()) - anchorAY * Math.sin(bodyA.rotation());
+        const hingeWorldY = bodyA.translation().y + anchorAX * Math.sin(bodyA.rotation()) + anchorAY * Math.cos(bodyA.rotation());
+        const bPos = bodyB.translation();
+        const dx = bPos.x - hingeWorldX;
+        const dy = bPos.y - hingeWorldY;
+        const cosA = Math.cos(startAngle);
+        const sinA = Math.sin(startAngle);
+        bodyB.setTranslation({ x: hingeWorldX + dx * cosA - dy * sinA, y: hingeWorldY + dx * sinA + dy * cosA }, true);
+        bodyB.setRotation(bodyB.rotation() + startAngle, true);
+      }
+
+      // Anchor B in body-local space needs to account for B's rotation offset
+      const cosB = Math.cos(-startAngle);
+      const sinB = Math.sin(-startAngle);
+      const rotAnchorBX = anchorBX * cosB - anchorBY * sinB;
+      const rotAnchorBY = anchorBX * sinB + anchorBY * cosB;
+
       const jointParams = RAPIER.JointData.revolute(
-        { x: anchorX, y: anchorY },
-        { x: anchorX, y: anchorY },
+        { x: anchorAX, y: anchorAY },
+        { x: rotAnchorBX, y: rotAnchorBY },
       );
       const joint = this.world.createImpulseJoint(jointParams, bodyA, bodyB, true);
 
       const revolute = joint as RAPIER.RevoluteImpulseJoint;
       revolute.setLimits(-maxAngle / 2, maxAngle / 2);
 
+      // Hinge collider attached to body A — circular so corners don't clip during rotation
       const def = getComponentDef(hingeComp.type as ComponentType);
-      const colliderDesc = RAPIER.ColliderDesc.cuboid(TILE_SIZE / 2, TILE_SIZE / 2)
-        .setTranslation(anchorX, anchorY)
+      const colliderDesc = RAPIER.ColliderDesc.ball(TILE_SIZE / 2)
+        .setTranslation(anchorAX, anchorAY)
         .setDensity(def.mass)
         .setFriction(0)
         .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
@@ -323,6 +375,7 @@ export class BattleSimulation {
         hingeComp.id, hingeComp.type as ComponentType,
         hingeComp.gridX, hingeComp.gridY, hingeComp.rotation,
         collider.handle, bodyA.handle, owner, hingeComp.hotkey,
+        hingeComp.hotkeys,
       );
       allComponents.push(instance);
       this.colliderToComponent.set(collider.handle, instance);
@@ -335,49 +388,37 @@ export class BattleSimulation {
         bodyAHandle: bodyA.handle,
         bodyBHandle: bodyB.handle,
         maxAngle,
+        lockedAngle: startAngle,
       });
     }
 
-    // Collision groups for hinge buffer zones
-    const compInstanceById = new Map(allComponents.map(c => [c.id, c]));
-    for (let hi = 0; hi < hingeComps.length; hi++) {
-      if (hi >= 7) break;
-      const hc = hingeComps[hi];
-      const neighbors = blueprint.adjacency[hc.id] ?? [];
-      const hingeInst = compInstanceById.get(hc.id);
-      if (!hingeInst) continue;
-
-      const sideABit = 1 << (2 * hi + 1);
-      const sideBBit = 1 << (2 * hi + 2);
-
-      const hingeColl = this.world.getCollider(hingeInst.colliderHandle);
-      if (hingeColl) {
-        hingeColl.setCollisionGroups((sideABit << 16) | (0xFFFF & ~sideBBit));
-      }
-
-      for (const nid of neighbors) {
-        if (hingeIds.has(nid)) continue;
-        const neighborInst = compInstanceById.get(nid);
-        if (!neighborInst) continue;
-
-        const isSideA = neighborInst.bodyHandle === hingeInst.bodyHandle;
-        const membership = isSideA ? sideABit : sideBBit;
-        const filter = 0xFFFF & ~(isSideA ? sideBBit : sideABit);
-
-        const coll = this.world.getCollider(neighborInst.colliderHandle);
-        if (coll) coll.setCollisionGroups((membership << 16) | filter);
-      }
+    // Prevent ALL same-ship collisions: assign a unique bit so components
+    // on different bodies of this ship can't collide with each other
+    const shipBit = 1 << this.nextShipGroupBit;
+    this.nextShipGroupBit = (this.nextShipGroupBit % 15) + 1; // cycle bits 1-15
+    const shipMembership = shipBit;
+    const shipFilter = 0xFFFF & ~shipBit;
+    for (const comp of allComponents) {
+      const coll = this.world.getCollider(comp.colliderHandle);
+      if (coll) coll.setCollisionGroups((shipMembership << 16) | shipFilter);
     }
 
     allComponents.sort((a, b) => (a.hotkeyPriority ?? 0) - (b.hotkeyPriority ?? 0));
 
     const primaryBody = sectionBodies[0]?.body;
+    const bodyInterpMap = new Map<number, { prevPos: { x: number; y: number }; prevAngle: number }>();
+    for (const sec of sectionBodies) {
+      const pos = sec.body.translation();
+      bodyInterpMap.set(sec.body.handle, { prevPos: { x: pos.x, y: pos.y }, prevAngle: 0 });
+    }
+
     const ship: ShipState = {
       bodyHandle: primaryBody?.handle ?? 0,
       components: allComponents,
       isPlayer,
       prevPosition: { x: offsetX, y: offsetY },
       prevAngle: 0,
+      bodyInterp: bodyInterpMap,
     };
 
     this.ships.push(ship);
@@ -411,8 +452,28 @@ export class BattleSimulation {
       ship.prevPosition = { x: pos.x, y: pos.y };
       ship.prevAngle = body.rotation();
       if (ship.isPlayer) {
-        const com = body.worldCom();
-        ship.prevCom = { x: com.x, y: com.y };
+        const comPos = this.getPlayerBodyPosition();
+        if (comPos) ship.prevCom = comPos;
+      }
+
+      // Save per-body interpolation state for multi-body ships
+      if (ship.bodyInterp) {
+        const seenHandles = new Set<number>();
+        for (const comp of ship.components) {
+          if (comp.health <= 0) continue;
+          if (seenHandles.has(comp.bodyHandle)) continue;
+          seenHandles.add(comp.bodyHandle);
+          const b = this.world.getRigidBody(comp.bodyHandle);
+          if (!b) continue;
+          const bp = b.translation();
+          ship.bodyInterp.set(comp.bodyHandle, { prevPos: { x: bp.x, y: bp.y }, prevAngle: b.rotation() });
+        }
+        // Remove stale entries for bodies no longer on this ship
+        for (const handle of ship.bodyInterp.keys()) {
+          if (!seenHandles.has(handle)) {
+            ship.bodyInterp.delete(handle);
+          }
+        }
       }
     }
 
@@ -494,15 +555,14 @@ export class BattleSimulation {
 
     // === ENGINE THRUST: apply thrust for all active engines ===
     for (const ship of this.ships) {
-      const body = this.world.getRigidBody(ship.bodyHandle);
-      if (!body) continue;
-
       for (const comp of ship.components) {
         if (!comp.isActive) continue;
 
         if (comp.type === ComponentType.EngineSmall ||
             comp.type === ComponentType.EngineMedium ||
             comp.type === ComponentType.EngineLarge) {
+          const body = this.world.getRigidBody(comp.bodyHandle);
+          if (!body) continue;
           this.applyEngineThrust(body, comp);
         }
       }
@@ -640,13 +700,32 @@ export class BattleSimulation {
     return this.ships.find(s => s.isPlayer);
   }
 
+  /** Get composite center of mass across all bodies that make up the player ship */
   getPlayerBodyPosition(): { x: number; y: number } | null {
     const ship = this.getPlayerShip();
     if (!ship) return null;
-    const body = this.world.getRigidBody(ship.bodyHandle);
-    if (!body) return null;
-    const com = body.worldCom();
-    return { x: com.x, y: com.y };
+
+    // Collect all unique body handles (hinged ships have multiple bodies)
+    const bodyHandles = new Set<number>();
+    for (const comp of ship.components) {
+      if (comp.health > 0) bodyHandles.add(comp.bodyHandle);
+    }
+
+    let totalMass = 0;
+    let comX = 0;
+    let comY = 0;
+    for (const handle of bodyHandles) {
+      const body = this.world.getRigidBody(handle);
+      if (!body) continue;
+      const m = body.mass();
+      const c = body.worldCom();
+      comX += c.x * m;
+      comY += c.y * m;
+      totalMass += m;
+    }
+
+    if (totalMass === 0) return null;
+    return { x: comX / totalMass, y: comY / totalMass };
   }
 
   destroy() {

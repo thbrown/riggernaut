@@ -1,9 +1,11 @@
 import { useCallback, useState } from 'react';
 import { GamePhase } from '../../types/game';
-import { ComponentType } from '../../types/components';
-import { PlacedComponent, GridPosition } from '../../types/grid';
+import { ComponentType, Side } from '../../types/components';
+import { PlacedComponent, GridPosition, rotateSide } from '../../types/grid';
 import { useGame } from '../../state/GameContext';
 import { computeAttachment } from '../../game/grid-logic';
+import { getComponentDef } from '../../game/component-registry';
+import { getHingeStartAngleSteps } from './ComponentRenderer';
 import { ComponentPanel } from './ComponentPanel';
 import { BuildGrid } from './BuildGrid';
 import { PhaseNav } from '../PhaseNav';
@@ -71,6 +73,59 @@ export function BuildPhase() {
     ));
   }, [components, updateComponents]);
 
+  const handleCycleHingeAngle = useCallback((id: string) => {
+    updateComponents(components.map(c => {
+      if (c.id !== id) return c;
+      const maxSteps = getHingeStartAngleSteps(c.type as ComponentType);
+      const current = c.hingeStartAngle ?? 0;
+      // Reset enabledSides when changing hinge angle since base sides change
+      return { ...c, hingeStartAngle: (current + 1) % maxSteps, enabledSides: undefined };
+    }));
+  }, [components, updateComponents]);
+
+  const handleCycleSides = useCallback((id: string) => {
+    updateComponents(components.map(c => {
+      if (c.id !== id) return c;
+      const isHinge = c.type === ComponentType.Hinge90 || c.type === ComponentType.Hinge180;
+      let baseSides: Side[];
+      if (isHinge) {
+        const step = c.hingeStartAngle ?? 0;
+        const movableSide = rotateSide(Side.East, step);
+        baseSides = [Side.West, movableSide];
+      } else {
+        const def = getComponentDef(c.type as ComponentType);
+        baseSides = [...def.attachableSides];
+      }
+
+      if (baseSides.length <= 1) return c; // Nothing to cycle
+
+      // Generate all non-empty subsets, starting with full set
+      const subsets: Side[][] = [];
+      const n = baseSides.length;
+      for (let mask = (1 << n) - 1; mask >= 1; mask--) {
+        const subset: Side[] = [];
+        for (let i = 0; i < n; i++) {
+          if (mask & (1 << i)) subset.push(baseSides[i]);
+        }
+        subsets.push(subset);
+      }
+
+      // Find current subset index
+      const currentEnabled = c.enabledSides ?? baseSides;
+      const currentIdx = subsets.findIndex(s =>
+        s.length === currentEnabled.length && s.every(side => currentEnabled.includes(side))
+      );
+      const nextIdx = (currentIdx + 1) % subsets.length;
+      const nextSubset = subsets[nextIdx];
+
+      // If next subset is full set, clear enabledSides (undefined = all enabled)
+      if (nextSubset.length === baseSides.length) {
+        return { ...c, enabledSides: undefined };
+      }
+      return { ...c, enabledSides: nextSubset };
+    }));
+  }, [components, updateComponents]);
+
   const handleProceed = () => {
     dispatch({ type: 'SET_PHASE', phase: GamePhase.HotkeyAssignment });
   };
@@ -122,6 +177,8 @@ export function BuildPhase() {
           onRemoveComponent={handleRemoveComponent}
           onMoveComponent={handleMoveComponent}
           onRotateComponent={handleRotateComponent}
+          onCycleHingeAngle={handleCycleHingeAngle}
+          onCycleSides={handleCycleSides}
         />
         <PhaseNav
           onBack={handleBack}

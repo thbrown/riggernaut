@@ -160,33 +160,49 @@ export class BattleRenderer {
   }
 
   private drawShip(ctx: CanvasRenderingContext2D, sim: BattleSimulation, ship: ShipState, alpha: number) {
-    const body = sim.world.getRigidBody(ship.bodyHandle);
-    if (!body) return;
-
-    const curPos = body.translation();
-    const curAngle = body.rotation();
-
-    // Interpolate between previous and current state
-    const ix = ship.prevPosition.x + (curPos.x - ship.prevPosition.x) * alpha;
-    const iy = ship.prevPosition.y + (curPos.y - ship.prevPosition.y) * alpha;
-    // Simple angle lerp (handles wrapping for small deltas)
-    let dAngle = curAngle - ship.prevAngle;
-    while (dAngle > Math.PI) dAngle -= 2 * Math.PI;
-    while (dAngle < -Math.PI) dAngle += 2 * Math.PI;
-    const iAngle = ship.prevAngle + dAngle * alpha;
-
-    ctx.save();
-    ctx.translate(ix * PIXELS_PER_METER, iy * PIXELS_PER_METER);
-    ctx.rotate(iAngle);
-
+    // Group living components by bodyHandle
+    const bodyGroups = new Map<number, typeof ship.components>();
     for (const comp of ship.components) {
       if (comp.health <= 0) continue;
+      let group = bodyGroups.get(comp.bodyHandle);
+      if (!group) {
+        group = [];
+        bodyGroups.set(comp.bodyHandle, group);
+      }
+      group.push(comp);
+    }
 
+    for (const [bodyHandle, comps] of bodyGroups) {
+      const body = sim.world.getRigidBody(bodyHandle);
+      if (!body) continue;
+
+      const curPos = body.translation();
+      const curAngle = body.rotation();
+
+      // Look up per-body interpolation state, fall back to ship-level for primary body
+      const interpState = ship.bodyInterp?.get(bodyHandle);
+      const prevPos = interpState?.prevPos ??
+        (bodyHandle === ship.bodyHandle ? ship.prevPosition : { x: curPos.x, y: curPos.y });
+      const prevAngle = interpState?.prevAngle ??
+        (bodyHandle === ship.bodyHandle ? ship.prevAngle : curAngle);
+
+      // Interpolate between previous and current state
+      const ix = prevPos.x + (curPos.x - prevPos.x) * alpha;
+      const iy = prevPos.y + (curPos.y - prevPos.y) * alpha;
+      let dAngle = curAngle - prevAngle;
+      while (dAngle > Math.PI) dAngle -= 2 * Math.PI;
+      while (dAngle < -Math.PI) dAngle += 2 * Math.PI;
+      const iAngle = prevAngle + dAngle * alpha;
+
+      ctx.save();
+      ctx.translate(ix * PIXELS_PER_METER, iy * PIXELS_PER_METER);
+      ctx.rotate(iAngle);
+
+    for (const comp of comps) {
       const collider = sim.world.getCollider(comp.colliderHandle);
       if (!collider) continue;
 
-      // Get local offset (relative to body) — collider.translation() returns world-space,
-      // but we've already translated/rotated by body transform, so compute local offset
+      // Get local offset (relative to body)
       const collWorld = collider.translation();
       const bodyWorld = body.translation();
       const bodyAngle = body.rotation();
@@ -207,15 +223,30 @@ export class BattleRenderer {
       ctx.rotate(comp.rotation * Math.PI / 2);
 
       // Draw component body
+      const isHinge = comp.type === ComponentType.Hinge90 || comp.type === ComponentType.Hinge180;
       const color = getComponentColor(comp.type);
       ctx.fillStyle = color;
       ctx.globalAlpha = 0.85;
-      ctx.fillRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
 
-      // Border
-      ctx.strokeStyle = ship.isPlayer ? '#88ccff' : '#ff6644';
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
+      if (isHinge) {
+        // Circular body for hinges (matches physics collider)
+        ctx.beginPath();
+        ctx.arc(0, 0, halfSize - 1, 0, Math.PI * 2);
+        ctx.fill();
+        // Circular border
+        ctx.strokeStyle = ship.isPlayer ? '#88ccff' : '#ff6644';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        // Faint square outline for grid context
+        ctx.strokeStyle = ship.isPlayer ? 'rgba(136,204,255,0.25)' : 'rgba(255,102,68,0.25)';
+        ctx.strokeRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
+      } else {
+        ctx.fillRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
+        // Border
+        ctx.strokeStyle = ship.isPlayer ? '#88ccff' : '#ff6644';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
+      }
 
       ctx.globalAlpha = 1;
 
@@ -228,7 +259,13 @@ export class BattleRenderer {
         if (ticksSince < 30) {
           const flashAlpha = 0.6 * (1 - ticksSince / 30) * (0.5 + 0.5 * Math.sin(ticksSince * 0.6));
           ctx.fillStyle = `rgba(255, 50, 50, ${flashAlpha})`;
-          ctx.fillRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
+          if (isHinge) {
+            ctx.beginPath();
+            ctx.arc(0, 0, halfSize - 1, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            ctx.fillRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
+          }
         }
       }
 
@@ -237,7 +274,13 @@ export class BattleRenderer {
       if (healthPct < 1) {
         const damageAlpha = (1 - healthPct) * 0.6;
         ctx.fillStyle = `rgba(255, 0, 0, ${damageAlpha})`;
-        ctx.fillRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
+        if (isHinge) {
+          ctx.beginPath();
+          ctx.arc(0, 0, halfSize - 1, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          ctx.fillRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
+        }
 
         // Crack lines at every 10% damage threshold (90%, 80%, 70%... etc.)
         const damagePct = 1 - healthPct;
@@ -439,6 +482,23 @@ export class BattleRenderer {
             ctx.fillStyle = '#fff';
             ctx.fillText(hk.toUpperCase(), ep.x, ep.y);
           }
+        } else if (isHinge && (comp.hotkey || comp.hotkeys?.[0])) {
+          // Two hotkey labels on East/West edges for hinge left/right
+          ctx.font = '8px monospace';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          const edgeOffset = halfSize * 0.7;
+          const hingeKeys = [
+            { x: -edgeOffset, y: 0, key: comp.hotkey },       // Left
+            { x: edgeOffset, y: 0, key: comp.hotkeys?.[0] },  // Right
+          ];
+          for (const hk of hingeKeys) {
+            if (!hk.key) continue;
+            ctx.fillStyle = 'rgba(0,0,0,0.7)';
+            ctx.fillRect(hk.x - 6, hk.y - 5, 12, 10);
+            ctx.fillStyle = '#fff';
+            ctx.fillText(hk.key.toUpperCase(), hk.x, hk.y);
+          }
         } else if (comp.hotkey) {
           ctx.fillStyle = 'rgba(0,0,0,0.6)';
           ctx.fillRect(-8, -8, 16, 14);
@@ -487,7 +547,8 @@ export class BattleRenderer {
       ctx.restore();
     }
 
-    ctx.restore();
+    ctx.restore(); // body group transform
+    } // end body group loop
   }
 
   /** Draw type-specific decorative icon on a component (canvas already at component center + rotated) */
@@ -551,10 +612,29 @@ export class BattleRenderer {
 
       case ComponentType.Hinge90:
       case ComponentType.Hinge180: {
-        // Arc
-        const arcAngle = type === ComponentType.Hinge90 ? Math.PI / 2 : Math.PI;
+        const r = s * 0.55;
+        const arcR = s * 0.35;
+        const halfRange = type === ComponentType.Hinge90 ? Math.PI / 4 : Math.PI / 2;
+        // Center dot
         ctx.beginPath();
-        ctx.arc(0, 0, s * 0.6, -Math.PI / 2 - arcAngle / 2, -Math.PI / 2 + arcAngle / 2);
+        ctx.arc(0, 0, 2, 0, Math.PI * 2);
+        ctx.fill();
+        // Fixed side line (West / left attachment)
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(Math.cos(Math.PI) * r, Math.sin(Math.PI) * r);
+        ctx.stroke();
+        // Sweep limit lines (East / right attachment side)
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(Math.cos(-halfRange) * r, Math.sin(-halfRange) * r);
+        ctx.moveTo(0, 0);
+        ctx.lineTo(Math.cos(halfRange) * r, Math.sin(halfRange) * r);
+        ctx.stroke();
+        // Arc sweep indicator
+        ctx.beginPath();
+        ctx.arc(0, 0, arcR, -halfRange, halfRange);
+        ctx.strokeStyle = 'rgba(255,255,255,0.4)';
         ctx.stroke();
         break;
       }

@@ -575,6 +575,18 @@ function mergeBodies(sim: BattleSimulation, survivor: ShipState, absorbed: ShipS
   sim.world.removeRigidBody(absBodyFinal);
   sim.ships = sim.ships.filter(s => s !== actualAbsorbed);
 
+  // Ensure survivor has bodyInterp with current body state
+  if (!actualSurvivor.bodyInterp) {
+    actualSurvivor.bodyInterp = new Map();
+  }
+  const survPosNow = survBodyFinal.translation();
+  actualSurvivor.bodyInterp.set(survBodyFinal.handle, {
+    prevPos: { x: survPosNow.x, y: survPosNow.y },
+    prevAngle: survBodyFinal.rotation(),
+  });
+  // Remove stale entry for absorbed body
+  actualSurvivor.bodyInterp.delete(absBodyFinal.handle);
+
   // Set momentum-conserving velocities now that Rapier has updated inertia
   const newInertia = survBodyFinal.principalInertia();
   const newAngvel = newInertia > 0 ? totalL / newInertia : 0;

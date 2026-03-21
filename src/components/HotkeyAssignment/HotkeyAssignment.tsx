@@ -306,6 +306,8 @@ export function HotkeyAssignment() {
                   type={comp.type as ComponentType}
                   rotation={comp.rotation}
                   size={TILE_PX}
+                  hingeStartAngle={comp.hingeStartAngle}
+                  enabledSides={comp.enabledSides}
                 />
                 {comp.type === ComponentType.Decoupler ? (
                   // Per-edge hotkey labels for decouplers (matches battle phase canvas style)
@@ -319,6 +321,32 @@ export function HotkeyAssignment() {
                       if (!edge.key) return null;
                       // Rotate label positions by component rotation
                       const rotIdx = (i + comp.rotation) % 4;
+                      const positions = [
+                        { top: 2, left: '50%', transform: 'translateX(-50%)' },
+                        { right: 2, top: '50%', transform: 'translateY(-50%)' },
+                        { bottom: 2, left: '50%', transform: 'translateX(-50%)' },
+                        { left: 2, top: '50%', transform: 'translateY(-50%)' },
+                      ];
+                      return (
+                        <div
+                          key={i}
+                          className="hotkey-assignment__label hotkey-assignment__label--edge"
+                          style={{ ...positions[rotIdx] as any, position: 'absolute' }}
+                        >
+                          {edge.key.toUpperCase()}
+                        </div>
+                      );
+                    })}
+                  </>
+                ) : (comp.type === ComponentType.Hinge90 || comp.type === ComponentType.Hinge180) ? (
+                  // Left/right hotkey labels on East/West edges for hinges
+                  <>
+                    {[
+                      { key: comp.hotkey, baseSide: 3 },     // Left = West
+                      { key: comp.hotkeys?.[0], baseSide: 1 }, // Right = East
+                    ].map((edge, i) => {
+                      if (!edge.key) return null;
+                      const rotIdx = (edge.baseSide + comp.rotation) % 4;
                       const positions = [
                         { top: 2, left: '50%', transform: 'translateX(-50%)' },
                         { right: 2, top: '50%', transform: 'translateY(-50%)' },

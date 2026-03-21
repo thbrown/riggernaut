@@ -17,11 +17,14 @@ interface BuildGridProps {
   onRemoveComponent: (id: string) => void;
   onMoveComponent: (id: string, pos: GridPosition) => void;
   onRotateComponent: (id: string) => void;
+  onCycleHingeAngle?: (id: string) => void;
+  onCycleSides?: (id: string) => void;
 }
 
 export function BuildGrid({
   width, height, components, activeComponentType,
   onPlaceComponent, onRemoveComponent, onMoveComponent, onRotateComponent,
+  onCycleHingeAngle, onCycleSides,
 }: BuildGridProps) {
   const [dragOverPos, setDragOverPos] = useState<GridPosition | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -41,12 +44,10 @@ export function BuildGrid({
     const movingId = e.dataTransfer.getData('component-id');
 
     if (movingId) {
-      // Moving existing component
       if (!isOccupied(components.filter(c => c.id !== movingId), pos)) {
         onMoveComponent(movingId, pos);
       }
     } else if (componentType) {
-      // Placing new component from panel
       if (!isOccupied(components, pos)) {
         onPlaceComponent(componentType, pos);
       }
@@ -58,9 +59,7 @@ export function BuildGrid({
     e.dataTransfer.setData('component-type', comp.type);
   }, []);
 
-  // Drag-out-to-sell: if a component is dragged and dropped outside the grid, remove it
   const handleDragEnd = useCallback((e: DragEvent, comp: PlacedComponent) => {
-    // dropEffect 'none' means it was not dropped on a valid target
     if (e.dataTransfer.dropEffect === 'none') {
       onRemoveComponent(comp.id);
     }
@@ -83,11 +82,13 @@ export function BuildGrid({
     onRotateComponent(comp.id);
   }, [onRotateComponent]);
 
-  // Build position lookup for placed components
   const compByPos = new Map<string, PlacedComponent>();
   for (const c of components) {
     compByPos.set(`${c.position.x},${c.position.y}`, c);
   }
+
+  const isHingeType = (type: string) =>
+    type === ComponentType.Hinge90 || type === ComponentType.Hinge180;
 
   return (
     <div className="build-grid__wrapper">
@@ -132,6 +133,8 @@ export function BuildGrid({
                       rotation={comp.rotation}
                       size={TILE_PX}
                       dimmed={isUnattached}
+                      hingeStartAngle={comp.hingeStartAngle}
+                      enabledSides={comp.enabledSides}
                     />
                     {isSelected && (
                       <div className="build-grid__actions">
@@ -140,8 +143,26 @@ export function BuildGrid({
                           onClick={(e) => { e.stopPropagation(); onRotateComponent(comp.id); }}
                           title="Rotate (or right-click)"
                         >
-                          R
+                          &#8635;
                         </button>
+                        {isHingeType(comp.type) && onCycleHingeAngle && (
+                          <button
+                            className="build-grid__action-btn"
+                            onClick={(e) => { e.stopPropagation(); onCycleHingeAngle(comp.id); }}
+                            title="Bend hinge"
+                          >
+                            &#8736;
+                          </button>
+                        )}
+                        {onCycleSides && (
+                          <button
+                            className="build-grid__action-btn"
+                            onClick={(e) => { e.stopPropagation(); onCycleSides(comp.id); }}
+                            title="Cycle attachment sides"
+                          >
+                            &#9635;
+                          </button>
+                        )}
                         <button
                           className="build-grid__action-btn build-grid__action-btn--remove"
                           onClick={(e) => { e.stopPropagation(); onRemoveComponent(comp.id); setSelectedId(null); }}

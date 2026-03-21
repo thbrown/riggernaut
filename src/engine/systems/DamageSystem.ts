@@ -83,13 +83,13 @@ export function processDestruction(sim: BattleSimulation) {
       }
     }
 
-    // Get body velocity for destruction particles
-    const body = sim.world.getRigidBody(ship.bodyHandle);
-    const bodyVel = body?.linvel();
-    const baseVx = (bodyVel?.x ?? 0) * PIXELS_PER_METER;
-    const baseVy = (bodyVel?.y ?? 0) * PIXELS_PER_METER;
-
     for (const comp of destroyed) {
+      // Get body velocity for destruction particles (per-component body)
+      const compBody = sim.world.getRigidBody(comp.bodyHandle);
+      const bodyVel = compBody?.linvel();
+      const baseVx = (bodyVel?.x ?? 0) * PIXELS_PER_METER;
+      const baseVy = (bodyVel?.y ?? 0) * PIXELS_PER_METER;
+
       // Spawn small destruction explosion at component position
       const collider = sim.world.getCollider(comp.colliderHandle);
       if (collider) {
@@ -306,6 +306,7 @@ export function splitOrphansToNewBodies(
       isPlayer: false,
       prevPosition: { x: cx, y: cy },
       prevAngle: parentAngle,
+      bodyInterp: new Map([[newBody.handle, { prevPos: { x: cx, y: cy }, prevAngle: parentAngle }]]),
     };
     sim.ships.push(junkShip);
   }

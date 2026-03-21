@@ -25,6 +25,7 @@ export interface ShipBlueprint {
     hotkeys?: string[];
     hotkeyPriority?: number;
     hotkeyPriorities?: Record<string, number>;
+    hingeStartAngle?: number;
   }>;
   /** Pre-computed adjacency for quick BFS */
   adjacency: Record<string, string[]>;

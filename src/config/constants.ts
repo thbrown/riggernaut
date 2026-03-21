@@ -80,8 +80,8 @@ export const DECOUPLER_ATTRACTION_FORCE = 200; // impulse scale for attraction
 // --- Hinge ---
 export const HINGE_MOTOR_VELOCITY = 2; // rad/s
 export const HINGE_MOTOR_DAMPING = 50;
-export const HINGE_LOCK_STIFFNESS = 1000;
-export const HINGE_LOCK_DAMPING = 100;
+export const HINGE_LOCK_STIFFNESS = 1e6;
+export const HINGE_LOCK_DAMPING = 1e4;
 
 // --- Camera ---
 export const CAMERA_DEFAULT_ZOOM = 1;

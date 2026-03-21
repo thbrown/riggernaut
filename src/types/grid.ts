@@ -18,6 +18,11 @@ export interface PlacedComponent {
   hotkeyPriority?: number;
   /** Per-key priorities for multi-key components (key → priority). Overrides hotkeyPriority. */
   hotkeyPriorities?: Record<string, number>;
+  /** Hinge starting angle index (0, 1, 2). Bends movable side to a grid-aligned direction. */
+  hingeStartAngle?: number;
+  /** Which of the component's attachable sides are enabled (component-local space).
+   *  If undefined, all base sides are enabled. */
+  enabledSides?: Side[];
 }
 
 export interface BuildGrid {

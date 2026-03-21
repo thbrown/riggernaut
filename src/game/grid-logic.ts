@@ -16,10 +16,34 @@ function getNeighborPos(pos: GridPosition, side: Side): GridPosition {
   }
 }
 
-/** Get the actual attachable sides for a component, accounting for rotation */
-function getRotatedAttachableSides(comp: PlacedComponent): Side[] {
-  const def = getComponentDef(comp.type as ComponentType);
-  return def.attachableSides.map(s => rotateSide(s, comp.rotation));
+/** Get the effective base attachable sides for a hinge, accounting for starting angle.
+ *  The fixed side (West) stays, the movable side (East) rotates by startAngle steps. */
+function getHingeBaseSides(_type: ComponentType, hingeStartAngle?: number): Side[] {
+  const step = hingeStartAngle ?? 0;
+  // Movable side (East) rotates by step * 90° increments
+  const movableSide = rotateSide(Side.East, step);
+  return [Side.West, movableSide];
+}
+
+/** Get the actual attachable sides for a component, accounting for rotation,
+ *  hinge start angle, and enabled sides filtering. */
+export function getRotatedAttachableSides(comp: PlacedComponent): Side[] {
+  const isHinge = comp.type === ComponentType.Hinge90 || comp.type === ComponentType.Hinge180;
+  let baseSides: Side[];
+
+  if (isHinge) {
+    baseSides = getHingeBaseSides(comp.type as ComponentType, comp.hingeStartAngle);
+  } else {
+    const def = getComponentDef(comp.type as ComponentType);
+    baseSides = def.attachableSides;
+  }
+
+  // Filter by enabled sides if specified
+  if (comp.enabledSides) {
+    baseSides = baseSides.filter(s => comp.enabledSides!.includes(s));
+  }
+
+  return baseSides.map(s => rotateSide(s, comp.rotation));
 }
 
 /** Check if two adjacent components can attach on the shared boundary */

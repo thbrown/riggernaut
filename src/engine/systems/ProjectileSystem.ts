@@ -18,9 +18,6 @@ export function processBlasterFire(
   for (let shipIdx = 0; shipIdx < sim.ships.length; shipIdx++) {
     const ship = sim.ships[shipIdx];
 
-    const body = sim.world.getRigidBody(ship.bodyHandle);
-    if (!body) continue;
-
     for (const comp of ship.components) {
       if (comp.health <= 0) continue;
       if (!comp.isActive) continue;
@@ -52,7 +49,7 @@ function spawnBolt(
   comp: ComponentInstance,
   size: 'small' | 'medium' | 'large',
 ): Projectile | null {
-  const body = sim.world.getRigidBody(sim.ships[shipIdx].bodyHandle);
+  const body = sim.world.getRigidBody(comp.bodyHandle);
   if (!body) return null;
 
   const collider = sim.world.getCollider(comp.colliderHandle);

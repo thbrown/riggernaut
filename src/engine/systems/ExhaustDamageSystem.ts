@@ -12,9 +12,6 @@ type ExhaustSize = 'small' | 'medium' | 'large';
 /** Apply exhaust damage from active engines to nearby components */
 export function processExhaustDamage(sim: BattleSimulation) {
   for (const ship of sim.ships) {
-    const body = sim.world.getRigidBody(ship.bodyHandle);
-    if (!body) continue;
-
     for (const comp of ship.components) {
       if (comp.health <= 0) continue;
 
@@ -26,6 +23,9 @@ export function processExhaustDamage(sim: BattleSimulation) {
       else continue;
 
       if (!comp.isActive) continue;
+
+      const body = sim.world.getRigidBody(comp.bodyHandle);
+      if (!body) continue;
 
       const collider = sim.world.getCollider(comp.colliderHandle);
       if (!collider) continue;
@@ -70,9 +70,6 @@ export function processExhaustDamage(sim: BattleSimulation) {
 
       // Check all components (including own ship, but not the engine itself)
       for (const targetShip of sim.ships) {
-        const targetBody = sim.world.getRigidBody(targetShip.bodyHandle);
-        if (!targetBody) continue;
-
         for (const target of targetShip.components) {
           // Skip the engine component itself — engines don't damage themselves
           if (target === comp) continue;
@@ -109,14 +106,15 @@ export function processExhaustDamage(sim: BattleSimulation) {
           reactionForceX += worldEdx * pushStrength;
           reactionForceY += worldEdy * pushStrength;
 
-          // Push force — only on different bodies (internal forces can't accelerate own body)
-          //if (!sameBody) {
+          // Push force on target's own body
+          const targetBody = sim.world.getRigidBody(target.bodyHandle);
+          if (targetBody) {
             targetBody.applyImpulseAtPoint(
               { x: worldEdx * pushStrength, y: worldEdy * pushStrength },
               { x: targetPos.x, y: targetPos.y },
               true
             );
-          //}
+          }
         }
       }
 
