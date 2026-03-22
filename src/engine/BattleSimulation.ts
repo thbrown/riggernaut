@@ -47,6 +47,9 @@ export class BattleSimulation {
   countdownTicks = 0;
   countdownTotal = 0;
   hingeJoints: HingeJoint[] = [];
+  sameShipContactPairs = new Set<string>();
+  /** Body handles currently involved in at least one same-ship contact (ref-counted) */
+  sameShipContactBodies = new Map<number, number>();
   decouplers: DecouplerState[] = [];
   rng = new DeterministicRng();
   /** Persistent connection graphs keyed by bodyHandle (for hinged ships, primary body handle) */
@@ -737,66 +740,45 @@ export class BattleSimulation {
     // Decoupler docking (low-speed contact merges bodies)
     processDecouplerDocking(this, this.decouplers);
 
-    // --- Pre-step: measure KE of hinged ships for energy clamping ---
-    const preStepKE = new Map<ShipState, number>();
-    const hingedShipSet = new Set<ShipState>();
-    if (this.hingeJoints.length > 0) {
-      const bodyToShip = new Map<number, ShipState>();
-      for (const ship of this.ships) {
-        for (const c of ship.components) {
-          if (c.health > 0) bodyToShip.set(c.bodyHandle, ship);
-        }
-      }
-      for (const hj of this.hingeJoints) {
-        const ship = bodyToShip.get(hj.bodyAHandle) ?? bodyToShip.get(hj.bodyBHandle);
-        if (ship) hingedShipSet.add(ship);
-      }
-      for (const ship of hingedShipSet) {
-        const handles = new Set<number>();
-        for (const c of ship.components) if (c.health > 0) handles.add(c.bodyHandle);
-        let ke = 0;
-        for (const h of handles) {
-          const b = this.world.getRigidBody(h);
-          if (!b) continue;
-          const m = b.mass();
-          const lv = b.linvel();
-          const av = b.angvel();
-          // Use mass-weighted metric for both linear and angular velocity
-          ke += 0.5 * m * (lv.x * lv.x + lv.y * lv.y) + 0.5 * m * av * av;
-        }
-        preStepKE.set(ship, ke);
-      }
-    }
-
     // Step physics
     this.world.step(this.eventQueue);
 
-    // --- Post-step: clamp KE of hinged ships to prevent energy feedback ---
-    for (const ship of hingedShipSet) {
-      const handles = new Set<number>();
-      for (const c of ship.components) if (c.health > 0) handles.add(c.bodyHandle);
-      let postKE = 0;
-      for (const h of handles) {
-        const b = this.world.getRigidBody(h);
-        if (!b) continue;
-        const m = b.mass();
-        const lv = b.linvel();
-        const av = b.angvel();
-        postKE += 0.5 * m * (lv.x * lv.x + lv.y * lv.y) + 0.5 * m * av * av;
-      }
-      const budget = preStepKE.get(ship) ?? 0;
-      const epsilon = 0.01;
-      if (budget > 0 && postKE > budget * (1 + epsilon)) {
-        const scale = Math.sqrt(budget / postKE);
-        for (const h of handles) {
-          const b = this.world.getRigidBody(h);
-          if (!b) continue;
-          const lv = b.linvel();
-          b.setLinvel({ x: lv.x * scale, y: lv.y * scale }, true);
-          b.setAngvel(b.angvel() * scale, true);
+    // Drain collision events: track same-ship contacts + collect for damage system
+    const damageEvents: Array<[number, number, boolean]> = [];
+    this.eventQueue.drainCollisionEvents((h1, h2, started) => {
+      const c1 = this.world.getCollider(h1);
+      const c2 = this.world.getCollider(h2);
+      if (c1 && c2) {
+        const b1 = c1.parent()!.handle;
+        const b2 = c2.parent()!.handle;
+        if (b1 !== b2) {
+          const ship1 = this.colliderToShip.get(h1);
+          const ship2 = this.colliderToShip.get(h2);
+          if (ship1 && ship2 && ship1 === ship2) {
+            // Ignore contacts involving hinge colliders (ball pivots naturally touch adjacent sections)
+            const comp1 = this.colliderToComponent.get(h1);
+            const comp2 = this.colliderToComponent.get(h2);
+            const def1 = comp1 ? getComponentDef(comp1.type) : undefined;
+            const def2 = comp2 ? getComponentDef(comp2.type) : undefined;
+            if (def1?.colliderShape !== 'circle' && def2?.colliderShape !== 'circle') {
+              const key = b1 < b2 ? `${b1}:${b2}` : `${b2}:${b1}`;
+              if (started) {
+                this.sameShipContactPairs.add(key);
+                this.sameShipContactBodies.set(b1, (this.sameShipContactBodies.get(b1) ?? 0) + 1);
+                this.sameShipContactBodies.set(b2, (this.sameShipContactBodies.get(b2) ?? 0) + 1);
+              } else {
+                this.sameShipContactPairs.delete(key);
+                const c1count = (this.sameShipContactBodies.get(b1) ?? 1) - 1;
+                if (c1count <= 0) this.sameShipContactBodies.delete(b1); else this.sameShipContactBodies.set(b1, c1count);
+                const c2count = (this.sameShipContactBodies.get(b2) ?? 1) - 1;
+                if (c2count <= 0) this.sameShipContactBodies.delete(b2); else this.sameShipContactBodies.set(b2, c2count);
+              }
+            }
+          }
         }
       }
-    }
+      damageEvents.push([h1, h2, started]);
+    });
 
     // Snapshot health before any damage to detect auto-detonations
     const prevHealth = new Map<string, number>();
@@ -837,7 +819,7 @@ export class BattleSimulation {
     }
 
     // ALL post-physics damage in one call
-    runDamagePhase(this, prevHealth, _dt);
+    runDamagePhase(this, prevHealth, _dt, damageEvents);
 
     // Win/loss
     if (gameActive) {

@@ -5,9 +5,9 @@ import { checkAutoDetonate, processExplosions } from './ExplosionSystem';
 import { processDestruction } from './DestructionSystem';
 
 /** Run the full post-physics damage sequence in correct order */
-export function runDamagePhase(sim: BattleSimulation, prevHealth: Map<string, number>, dt: number) {
+export function runDamagePhase(sim: BattleSimulation, prevHealth: Map<string, number>, dt: number, damageEvents: Array<[number, number, boolean]>) {
   // 1. Collision damage
-  processCollisionDamage(sim);
+  processCollisionDamage(sim, damageEvents);
 
   // 2. Exhaust damage
   processExhaustDamage(sim);
