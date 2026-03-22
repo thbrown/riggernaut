@@ -22,6 +22,7 @@ export function createBlueprint(allComponents: PlacedComponent[]): ShipBlueprint
       hotkeyPriority: c.hotkeyPriority,
       hotkeyPriorities: c.hotkeyPriorities,
       hingeStartAngle: c.hingeStartAngle,
+      enabledSides: c.enabledSides,
     })),
     adjacency,
   };

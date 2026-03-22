@@ -1,7 +1,7 @@
 import RAPIER from '@dimforge/rapier2d-compat';
 import { BattleSimulation } from '../BattleSimulation';
 import { ComponentInstance } from '../entities/ComponentInstance';
-import { ComponentType } from '../../types/components';
+import { getComponentDef } from '../../game/components';
 import {
   EXPLOSION_DAMAGE, EXPLOSION_RADIUS, EXPLOSION_CHAIN_MULTIPLIER,
   EXPLOSION_RAY_COUNT, EXPLOSION_RAY_DAMAGE_SCALE,
@@ -85,11 +85,11 @@ export function detonateExplosive(
       const prevHealth = hit.target.health;
       hit.target.health = Math.max(0, hit.target.health - actualDamage);
       const dealt = prevHealth - hit.target.health;
-      if (dealt > 0) hit.target.lastDamageTick = sim.tickCount;
+      if (dealt > 0) { hit.target.lastDamageTick = sim.tickCount; hit.target.lastAttackerBodyHandle = comp.bodyHandle; }
 
       if (hit.target.health <= 0) {
         // Destroyed — chain if explosive
-        if (hit.target.type === ComponentType.Explosive && !queuedIds.has(hit.target.id)) {
+        if (getComponentDef(hit.target.type).chainReactsOnDeath && !queuedIds.has(hit.target.id)) {
           queuedIds.add(hit.target.id);
           detonationQueue.push({
             comp: hit.target,
@@ -192,7 +192,7 @@ export function processExplosions(sim: BattleSimulation, dt: number) {
   // Check for destroyed explosives that need to auto-detonate
   for (const ship of sim.ships) {
     for (const comp of ship.components) {
-      if (comp.type === ComponentType.Explosive && comp.health <= 0) {
+      if (getComponentDef(comp.type).chainReactsOnDeath && comp.health <= 0) {
         // Already handled by destruction - detonation happens when manually triggered
         // or via chain reaction. Auto-detonate is handled in processDestruction
       }
@@ -212,7 +212,7 @@ export function processExplosions(sim: BattleSimulation, dt: number) {
 export function checkAutoDetonate(sim: BattleSimulation, previousHealth: Map<string, number>) {
   for (const ship of sim.ships) {
     for (const comp of ship.components) {
-      if (comp.type !== ComponentType.Explosive) continue;
+      if (!getComponentDef(comp.type).chainReactsOnDeath) continue;
       const prevHP = previousHealth.get(comp.id) ?? comp.maxHealth;
       if (prevHP > 0 && comp.health <= 0) {
         detonateExplosive(sim, comp, 1);

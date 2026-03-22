@@ -1,6 +1,6 @@
+import { useState } from 'react';
 import { ComponentType } from '../../types/components';
-import { ALL_COMPONENT_TYPES, getComponentDef } from '../../game/component-registry';
-import { BLASTER_STATS, ENGINE_THRUST } from '../../config/constants';
+import { ALL_COMPONENT_TYPES, getComponentDef } from '../../game/components';
 import { ComponentRenderer } from './ComponentRenderer';
 import './ComponentPanel.css';
 
@@ -23,22 +23,14 @@ const COMPONENT_DESCRIPTIONS: Record<string, string> = {
 };
 
 function getExtraStats(type: ComponentType): string | null {
-  switch (type) {
-    case ComponentType.BlasterSmall:
-      return `DMG: ${BLASTER_STATS.small.damage}  SPD: ${BLASTER_STATS.small.boltSpeed}  ROF: ${BLASTER_STATS.small.fireRatePerSec}/s`;
-    case ComponentType.BlasterMedium:
-      return `DMG: ${BLASTER_STATS.medium.damage}  SPD: ${BLASTER_STATS.medium.boltSpeed}  ROF: ${BLASTER_STATS.medium.fireRatePerSec}/s`;
-    case ComponentType.BlasterLarge:
-      return `DMG: ${BLASTER_STATS.large.damage}  SPD: ${BLASTER_STATS.large.boltSpeed}  ROF: ${BLASTER_STATS.large.fireRatePerSec}/s`;
-    case ComponentType.EngineSmall:
-      return `Thrust: ${ENGINE_THRUST.small}`;
-    case ComponentType.EngineMedium:
-      return `Thrust: ${ENGINE_THRUST.medium}`;
-    case ComponentType.EngineLarge:
-      return `Thrust: ${ENGINE_THRUST.large}`;
-    default:
-      return null;
+  const def = getComponentDef(type);
+  if (def.config.kind === 'blaster') {
+    return `DMG: ${def.config.damage}  SPD: ${def.config.boltSpeed}  ROF: ${def.config.fireRatePerSec}/s`;
   }
+  if (def.config.kind === 'engine') {
+    return `Thrust: ${def.config.thrust}`;
+  }
+  return null;
 }
 
 interface ComponentPanelProps {
@@ -50,6 +42,14 @@ interface ComponentPanelProps {
 }
 
 export function ComponentPanel({ costs, activeType, disabledTypes, onSelect, onDragStart }: ComponentPanelProps) {
+  const [hoveredType, setHoveredType] = useState<ComponentType | null>(null);
+
+  // Show description for hovered item, falling back to active (selected) item
+  const detailType = hoveredType ?? activeType;
+  const detailDef = detailType ? getComponentDef(detailType) : null;
+  const detailDesc = detailType ? (COMPONENT_DESCRIPTIONS[detailType] ?? '') : '';
+  const detailExtra = detailType ? getExtraStats(detailType) : null;
+
   return (
     <div className="component-panel">
       <h3 className="component-panel__title">Components</h3>
@@ -57,8 +57,6 @@ export function ComponentPanel({ costs, activeType, disabledTypes, onSelect, onD
         {ALL_COMPONENT_TYPES.map(type => {
           const def = getComponentDef(type);
           const cost = costs[type] ?? 0;
-          const desc = COMPONENT_DESCRIPTIONS[type] ?? '';
-          const extra = getExtraStats(type);
           const disabled = disabledTypes?.has(type) ?? false;
           return (
             <div
@@ -71,25 +69,33 @@ export function ComponentPanel({ costs, activeType, disabledTypes, onSelect, onD
                 e.dataTransfer.setData('component-type', type);
                 onDragStart(type);
               }}
+              onMouseEnter={() => setHoveredType(type)}
+              onMouseLeave={() => setHoveredType(null)}
             >
               <ComponentRenderer type={type} size={40} />
               <div className="component-panel__info">
                 <span className="component-panel__name">{def.displayName}</span>
                 <span className="component-panel__cost">${cost}</span>
               </div>
-              <div className="component-panel__tooltip">
-                <div className="component-panel__tooltip-name">{def.displayName}</div>
-                <div className="component-panel__tooltip-desc">{desc}</div>
-                <div className="component-panel__tooltip-stats">
-                  <span>HP: {def.maxHealth}</span>
-                  <span>Hardness: {def.hardness}</span>
-                  <span>Mass: {def.mass}</span>
-                </div>
-                {extra && <div className="component-panel__tooltip-extra">{extra}</div>}
-              </div>
             </div>
           );
         })}
+      </div>
+      <div className="component-panel__desc-section">
+        {detailDef ? (
+          <>
+            <div className="component-panel__desc-header">{detailDef.displayName}</div>
+            <div className="component-panel__desc-text">{detailDesc}</div>
+            <div className="component-panel__desc-stats">
+              <span>HP: {detailDef.maxHealth}</span>
+              <span>Hardness: {detailDef.hardness}</span>
+              <span>Mass: {detailDef.mass}</span>
+            </div>
+            {detailExtra && <div className="component-panel__desc-extra">{detailExtra}</div>}
+          </>
+        ) : (
+          <div className="component-panel__desc-empty">Hover or select a component</div>
+        )}
       </div>
     </div>
   );

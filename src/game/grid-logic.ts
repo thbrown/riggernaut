@@ -1,6 +1,6 @@
 import { PlacedComponent, GridPosition, oppositeSide, rotateSide } from '../types/grid';
 import { Side } from '../types/components';
-import { getComponentDef } from './component-registry';
+import { getComponentDef } from './components';
 import { ComponentType } from '../types/components';
 
 function posKey(pos: GridPosition): string {
@@ -16,29 +16,20 @@ function getNeighborPos(pos: GridPosition, side: Side): GridPosition {
   }
 }
 
-/** Get the effective base attachable sides for a hinge, accounting for starting angle.
- *  The fixed side (West) stays, the movable side (East) rotates by startAngle steps. */
-function getHingeBaseSides(_type: ComponentType, hingeStartAngle?: number): Side[] {
-  const step = hingeStartAngle ?? 0;
-  // Movable side (East) rotates by step * 90° increments
-  const movableSide = rotateSide(Side.East, step);
-  return [Side.West, movableSide];
-}
-
 /** Get the actual attachable sides for a component, accounting for rotation,
  *  hinge start angle, and enabled sides filtering. */
 export function getRotatedAttachableSides(comp: PlacedComponent): Side[] {
-  const isHinge = comp.type === ComponentType.Hinge90 || comp.type === ComponentType.Hinge180;
+  const def = getComponentDef(comp.type as ComponentType);
   let baseSides: Side[];
 
-  if (isHinge) {
-    baseSides = getHingeBaseSides(comp.type as ComponentType, comp.hingeStartAngle);
+  if (def.colliderShape === 'circle' && def.config.kind === 'hinge') {
+    const step = comp.hingeStartAngle ?? 0;
+    const movableSide = rotateSide(Side.East, step);
+    baseSides = [Side.West, movableSide];
   } else {
-    const def = getComponentDef(comp.type as ComponentType);
     baseSides = def.attachableSides;
   }
 
-  // Filter by enabled sides if specified
   if (comp.enabledSides) {
     baseSides = baseSides.filter(s => comp.enabledSides!.includes(s));
   }
@@ -70,9 +61,10 @@ export function computeAttachment(components: PlacedComponent[]): AttachmentResu
   const attached = new Set<string>();
   const queue: PlacedComponent[] = [];
 
-  // Seed BFS with all Command Modules and Radios
+  // Seed BFS with all anchors (CommandModule) and drone controllers (Radio)
   for (const c of components) {
-    if (c.type === ComponentType.CommandModule || c.type === ComponentType.Radio) {
+    const def = getComponentDef(c.type as ComponentType);
+    if (def.isConnectivityAnchor || def.enablesDroneControl) {
       attached.add(c.id);
       queue.push(c);
     }

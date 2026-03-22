@@ -1,3 +1,5 @@
+import { Side } from './components';
+
 export interface Vec2 {
   x: number;
   y: number;
@@ -26,6 +28,7 @@ export interface ShipBlueprint {
     hotkeyPriority?: number;
     hotkeyPriorities?: Record<string, number>;
     hingeStartAngle?: number;
+    enabledSides?: Side[];
   }>;
   /** Pre-computed adjacency for quick BFS */
   adjacency: Record<string, string[]>;

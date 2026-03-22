@@ -1,7 +1,5 @@
-import { ComponentType } from '../../types/components';
-import { BLASTER_STATS, TILE_SIZE } from '../../config/constants';
-
-export type BlasterSize = 'small' | 'medium' | 'large';
+import { BlasterConfig } from '../../types/components';
+import { TILE_SIZE } from '../../config/constants';
 
 export interface Projectile {
   id: number;
@@ -25,36 +23,26 @@ let nextProjectileId = 0;
 
 export function resetProjectileId() { nextProjectileId = 0; }
 
-export function blasterSizeFromType(type: ComponentType): BlasterSize | null {
-  switch (type) {
-    case ComponentType.BlasterSmall: return 'small';
-    case ComponentType.BlasterMedium: return 'medium';
-    case ComponentType.BlasterLarge: return 'large';
-    default: return null;
-  }
-}
-
 export function createProjectile(
   ownerShipIndex: number,
   ownerCompId: string,
   x: number, y: number,
   dirX: number, dirY: number,
-  size: BlasterSize,
+  config: BlasterConfig,
   bodyVelX = 0, bodyVelY = 0,
 ): Projectile {
-  const stats = BLASTER_STATS[size];
   return {
     id: nextProjectileId++,
     ownerShipIndex,
     ownerCompId,
     x, y,
-    vx: dirX * stats.boltSpeed + bodyVelX,
-    vy: dirY * stats.boltSpeed + bodyVelY,
-    damage: stats.damage,
-    color: stats.boltColor,
-    width: stats.boltWidth * TILE_SIZE,
-    length: stats.boltLength * TILE_SIZE,
-    maxRange: 30 * TILE_SIZE, // bolts travel ~30 tiles before expiring
+    vx: dirX * config.boltSpeed + bodyVelX,
+    vy: dirY * config.boltSpeed + bodyVelY,
+    damage: config.damage,
+    color: config.boltColor,
+    width: config.boltWidth * TILE_SIZE,
+    length: config.boltLength * TILE_SIZE,
+    maxRange: 30 * TILE_SIZE,
     distanceTraveled: 0,
     alive: true,
   };

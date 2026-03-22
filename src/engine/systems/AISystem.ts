@@ -1,11 +1,10 @@
 import { BattleSimulation, ShipState } from '../BattleSimulation';
-import { ComponentType, Side } from '../../types/components';
-import { getComponentDef } from '../../game/component-registry';
+import { Side } from '../../types/components';
+import { getComponentDef } from '../../game/components';
 import { rotateSide } from '../../types/grid';
-import { ENGINE_THRUST, FIXED_TIMESTEP, BLASTER_STATS } from '../../config/constants';
+import { FIXED_TIMESTEP } from '../../config/constants';
 import { ComponentInstance } from '../entities/ComponentInstance';
-import { blasterSizeFromType } from '../entities/Projectile';
-import RAPIER from '@dimforge/rapier2d-compat';
+import { applyRotationPD } from './RotationControlSystem';
 
 export type AIType = 'rammer' | 'shooter';
 
@@ -13,20 +12,6 @@ export type AIType = 'rammer' | 'shooter';
 const ROTATION_KP = 800;
 const ROTATION_KD = 200;
 const ROTATION_MAX_TORQUE = 2000;
-
-function applyRotationControl(
-  body: RAPIER.RigidBody,
-  targetAngle: number,
-  kP: number,
-  kD: number,
-  maxTorque: number,
-) {
-  let error = targetAngle - body.rotation();
-  // Wrap to [-PI, PI]
-  error = ((error + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
-  const torque = Math.max(-maxTorque, Math.min(maxTorque, kP * error - kD * body.angvel()));
-  body.applyTorqueImpulse(torque * FIXED_TIMESTEP, true);
-}
 
 /**
  * Compute the world-space thrust direction for an engine component on a given body.
@@ -72,9 +57,8 @@ function fireEnginesInDirection(
   const angle = body.rotation();
   for (const comp of ship.components) {
     if (comp.health <= 0) continue;
-    if (comp.type !== ComponentType.EngineSmall &&
-        comp.type !== ComponentType.EngineMedium &&
-        comp.type !== ComponentType.EngineLarge) continue;
+    const def = getComponentDef(comp.type);
+    if (def.config.kind !== 'engine') continue;
 
     const thrustDir = getEngineThrustDir(comp, angle);
     if (!thrustDir) continue;
@@ -82,9 +66,7 @@ function fireEnginesInDirection(
     const dot = thrustDir.dx * dirX + thrustDir.dy * dirY;
     if (dot < 0.2) continue;
 
-    const size = comp.type === ComponentType.EngineSmall ? 'small'
-      : comp.type === ComponentType.EngineMedium ? 'medium' : 'large';
-    const thrust = ENGINE_THRUST[size] * throttle * dot;
+    const thrust = def.config.thrust * throttle * dot;
 
     const collider = sim.world.getCollider(comp.colliderHandle);
     if (!collider) continue;
@@ -124,7 +106,7 @@ export function updateRammerAI(sim: BattleSimulation, ship: ShipState) {
 
   // Rotate North face (ram face) toward player
   const targetAngle = Math.atan2(toPlayerX, -toPlayerY);
-  applyRotationControl(body, targetAngle, ROTATION_KP, ROTATION_KD, ROTATION_MAX_TORQUE);
+  applyRotationPD(body, targetAngle, ROTATION_KP, ROTATION_KD, ROTATION_MAX_TORQUE);
 
   // Desired velocity: toward player, capped at max speed
   const desiredVx = toPlayerX * RAMMER_MAX_SPEED;
@@ -182,7 +164,8 @@ export function updateShooterAI(sim: BattleSimulation, ship: ShipState, shipInde
 
   // Lead targeting: predict where player will be when bolt arrives
   const playerVel = playerBody.linvel();
-  const timeToTarget = dist / BLASTER_STATS.medium.boltSpeed;
+  // Use a representative bolt speed (medium blaster) for lead prediction
+  const timeToTarget = dist / 14;
   const leadX = playerPos.x + playerVel.x * timeToTarget - pos.x;
   const leadY = playerPos.y + playerVel.y * timeToTarget - pos.y;
   const leadDist = Math.sqrt(leadX * leadX + leadY * leadY);
@@ -191,7 +174,7 @@ export function updateShooterAI(sim: BattleSimulation, ship: ShipState, shipInde
 
   // Rotate North/blaster face toward lead position
   const targetAngle = Math.atan2(aimX, -aimY);
-  applyRotationControl(body, targetAngle, ROTATION_KP, ROTATION_KD, ROTATION_MAX_TORQUE);
+  applyRotationPD(body, targetAngle, ROTATION_KP, ROTATION_KD, ROTATION_MAX_TORQUE);
 
   // Compute desired radial speed based on distance
   let desiredRadialSpeed = 0;
@@ -229,7 +212,7 @@ export function updateShooterAI(sim: BattleSimulation, ship: ShipState, shipInde
   // Activate all blasters so processBlasterFire will fire them
   for (const comp of ship.components) {
     if (comp.health <= 0) continue;
-    const bSize = blasterSizeFromType(comp.type);
-    if (bSize) comp.isActive = true;
+    const cDef = getComponentDef(comp.type);
+    if (cDef.config.kind === 'blaster') comp.isActive = true;
   }
 }

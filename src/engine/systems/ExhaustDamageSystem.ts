@@ -1,13 +1,11 @@
 import { BattleSimulation } from '../BattleSimulation';
-import { ComponentType, Side } from '../../types/components';
-import { getComponentDef } from '../../game/component-registry';
+import { Side } from '../../types/components';
+import { getComponentDef } from '../../game/components';
 import { rotateSide } from '../../types/grid';
 import {
-  ENGINE_EXHAUST_SHAPE, ENGINE_EXHAUST_DPS, ENGINE_EXHAUST_PUSH_FORCE,
+  ENGINE_EXHAUST_PUSH_FORCE,
   TILE_SIZE, FIXED_TIMESTEP,
 } from '../../config/constants';
-
-type ExhaustSize = 'small' | 'medium' | 'large';
 
 /** Apply exhaust damage from active engines to nearby components */
 export function processExhaustDamage(sim: BattleSimulation) {
@@ -15,12 +13,8 @@ export function processExhaustDamage(sim: BattleSimulation) {
     for (const comp of ship.components) {
       if (comp.health <= 0) continue;
 
-      let size: ExhaustSize | null = null;
-
-      if (comp.type === ComponentType.EngineSmall) size = 'small';
-      else if (comp.type === ComponentType.EngineMedium) size = 'medium';
-      else if (comp.type === ComponentType.EngineLarge) size = 'large';
-      else continue;
+      const def = getComponentDef(comp.type);
+      if (def.config.kind !== 'engine') continue;
 
       if (!comp.isActive) continue;
 
@@ -32,8 +26,6 @@ export function processExhaustDamage(sim: BattleSimulation) {
 
       const enginePos = collider.translation();
 
-      // Exhaust direction: functional side (south by default for engines)
-      const def = getComponentDef(comp.type);
       const functionalSide = def.functionalSide ?? Side.South;
       const exhaustSide = rotateSide(functionalSide, comp.rotation);
 
@@ -61,8 +53,8 @@ export function processExhaustDamage(sim: BattleSimulation) {
       const originX = enginePos.x + worldEdx * 0.5 * TILE_SIZE;
       const originY = enginePos.y + worldEdy * 0.5 * TILE_SIZE;
 
-      const { semiMajor, semiMinor } = ENGINE_EXHAUST_SHAPE[size];
-      const dps = ENGINE_EXHAUST_DPS[size];
+      const { semiMajor, semiMinor } = def.config.exhaustShape;
+      const dps = def.config.exhaustDps;
 
       // Accumulate reaction forces from all blocked exhaust (Newton's 3rd law)
       let reactionForceX = 0;
@@ -98,7 +90,7 @@ export function processExhaustDamage(sim: BattleSimulation) {
 
           // Apply damage
           const dmg = dps * FIXED_TIMESTEP * falloff;
-          if (dmg > 0) target.lastDamageTick = sim.tickCount;
+          if (dmg > 0) { target.lastDamageTick = sim.tickCount; target.lastAttackerBodyHandle = body.handle; }
           target.health = Math.max(0, target.health - dmg);
 
           // Compute push strength for all targets (reaction force accumulation)

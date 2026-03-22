@@ -1,9 +1,9 @@
 import { BattleSimulation } from '../BattleSimulation';
-import { Projectile, createProjectile, blasterSizeFromType } from '../entities/Projectile';
-import { Side } from '../../types/components';
-import { getComponentDef } from '../../game/component-registry';
+import { Projectile, createProjectile } from '../entities/Projectile';
+import { Side, BlasterConfig } from '../../types/components';
+import { getComponentDef } from '../../game/components';
 import { rotateSide } from '../../types/grid';
-import { BLASTER_STATS, FIXED_TIMESTEP, TILE_SIZE } from '../../config/constants';
+import { FIXED_TIMESTEP, TILE_SIZE } from '../../config/constants';
 import { ComponentInstance } from '../entities/ComponentInstance';
 
 /** Track fire cooldowns per component id */
@@ -22,8 +22,8 @@ export function processBlasterFire(
       if (comp.health <= 0) continue;
       if (!comp.isActive) continue;
 
-      const size = blasterSizeFromType(comp.type);
-      if (!size) continue;
+      const def = getComponentDef(comp.type);
+      if (def.config.kind !== 'blaster') continue;
 
       // Check cooldown
       const cooldown = fireCooldowns.get(comp.id) ?? 0;
@@ -33,10 +33,10 @@ export function processBlasterFire(
       }
 
       // Fire!
-      const proj = spawnBolt(sim, shipIdx, comp, size);
+      const proj = spawnBolt(sim, shipIdx, comp, def.config);
       if (proj) {
         projectiles.push(proj);
-        fireCooldowns.set(comp.id, 1 / BLASTER_STATS[size].fireRatePerSec);
+        fireCooldowns.set(comp.id, 1 / def.config.fireRatePerSec);
         comp.lastFireTick = sim.tickCount;
       }
     }
@@ -47,7 +47,7 @@ function spawnBolt(
   sim: BattleSimulation,
   shipIdx: number,
   comp: ComponentInstance,
-  size: 'small' | 'medium' | 'large',
+  config: BlasterConfig,
 ): Projectile | null {
   const body = sim.world.getRigidBody(comp.bodyHandle);
   if (!body) return null;
@@ -59,7 +59,6 @@ function spawnBolt(
   const functionalSide = def.functionalSide ?? Side.North;
   const fireSide = rotateSide(functionalSide, comp.rotation);
 
-  // Direction in local space
   let ldx = 0, ldy = 0;
   switch (fireSide) {
     case Side.North: ldx = 0; ldy = -1; break;
@@ -68,29 +67,26 @@ function spawnBolt(
     case Side.West: ldx = -1; ldy = 0; break;
   }
 
-  // Rotate by body angle
   const angle = body.rotation();
   const cos = Math.cos(angle);
   const sin = Math.sin(angle);
   const dirX = ldx * cos - ldy * sin;
   const dirY = ldx * sin + ldy * cos;
 
-  // Spawn position: component world position + offset in fire direction
   const worldPos = collider.translation();
   const spawnX = worldPos.x + dirX * TILE_SIZE * 0.6;
   const spawnY = worldPos.y + dirY * TILE_SIZE * 0.6;
 
-  // Apply kickback impulse at blaster position (opposite to fire direction)
-  const stats = BLASTER_STATS[size];
   body.applyImpulseAtPoint(
-    { x: -dirX * stats.kickback, y: -dirY * stats.kickback },
+    { x: -dirX * config.kickback, y: -dirY * config.kickback },
     worldPos,
     true,
   );
 
   const bodyVel = body.linvel();
-  return createProjectile(shipIdx, comp.id, spawnX, spawnY, dirX, dirY, size, bodyVel.x, bodyVel.y);
+  return createProjectile(shipIdx, comp.id, spawnX, spawnY, dirX, dirY, config, bodyVel.x, bodyVel.y);
 }
+
 
 /** Move projectiles and check for collisions */
 export function updateProjectiles(sim: BattleSimulation, projectiles: Projectile[], dt: number) {
@@ -124,6 +120,9 @@ export function updateProjectiles(sim: BattleSimulation, projectiles: Projectile
           // Hit!
           comp.health = Math.max(0, comp.health - proj.damage);
           comp.lastDamageTick = sim.tickCount;
+          // Attribute damage to the ship that fired this projectile
+          const ownerShip = sim.ships[proj.ownerShipIndex];
+          if (ownerShip) comp.lastAttackerBodyHandle = ownerShip.bodyHandle;
           proj.alive = false;
           break;
         }

@@ -1,5 +1,5 @@
-import { ComponentType } from '../../types/components';
-import { getComponentDef } from '../../game/component-registry';
+import { ComponentType, Side } from '../../types/components';
+import { getComponentDef } from '../../game/components';
 
 /** Who controls this component's activation state */
 export type Owner = 'player' | 'ai' | null;
@@ -30,6 +30,13 @@ export interface ComponentInstance {
   lastFireTick?: number;
   /** Per-key priorities for multi-key components */
   hotkeyPriorities?: Record<string, number>;
+  /** Which of the component's attachable sides are enabled (component-local space).
+   *  If undefined, all base sides are enabled. */
+  enabledSides?: Side[];
+  /** Hinge starting angle index (0, 1, 2). Determines movable-side direction. */
+  hingeStartAngle?: number;
+  /** Body handle of the last entity that dealt damage to this component */
+  lastAttackerBodyHandle?: number;
 }
 
 export function createComponentInstance(
@@ -44,6 +51,8 @@ export function createComponentInstance(
   hotkey?: string,
   hotkeys?: string[],
   hotkeyPriority?: number,
+  enabledSides?: Side[],
+  hingeStartAngle?: number,
 ): ComponentInstance {
   const def = getComponentDef(type);
   return {
@@ -61,5 +70,7 @@ export function createComponentInstance(
     bodyHandle,
     owner,
     isActive: false,
+    enabledSides,
+    hingeStartAngle,
   };
 }

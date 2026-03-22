@@ -32,36 +32,12 @@ export const MAX_COLLISION_DAMAGE = Infinity; // per-tick cap (Infinity = uncapp
 // --- Component Mass (uniform for now) ---
 export const DEFAULT_COMPONENT_MASS = 100; // kg
 
-// --- Blaster Stats ---
-export const BLASTER_STATS = {
-  small: { boltSpeed: 20, damage: 10, fireRatePerSec: 5, boltColor: '#ff3333', boltWidth: 0.15, boltLength: 0.4, kickback: 8 },
-  medium: { boltSpeed: 14, damage: 25, fireRatePerSec: 2.5, boltColor: '#ffcc00', boltWidth: 0.2, boltLength: 0.55, kickback: 20 },
-  large: { boltSpeed: 8, damage: 50, fireRatePerSec: 1, boltColor: '#9933ff', boltWidth: 0.3, boltLength: 0.75, kickback: 50 },
-} as const;
-
-// --- Engine Thrust ---
-export const ENGINE_THRUST = {
-  small: 300,
-  medium: 600,
-  large: 1200,
-} as const;
-
-// --- Engine Exhaust Damage ---
-export const ENGINE_EXHAUST_SHAPE = {
-  small:  { semiMajor: 0.9, semiMinor: 0.4 },
-  medium: { semiMajor: 1.8, semiMinor: 0.8 },
-  large:  { semiMajor: 3.6, semiMinor: 1.6 },
-} as const;
-export const ENGINE_EXHAUST_DPS = {
-  small: 10,
-  medium: 20,
-  large: 40,
-} as const;
+// --- Engine Exhaust ---
 export const ENGINE_EXHAUST_PUSH_FORCE = 500;
 
 // --- Explosives ---
-export const EXPLOSION_DAMAGE = 160;
-export const EXPLOSION_RADIUS = 3; // tile lengths
+export const EXPLOSION_DAMAGE = 360;
+export const EXPLOSION_RADIUS = 6; // tile lengths
 export const EXPLOSION_CHAIN_MULTIPLIER = 2; // damage & radius multiplier per chain
 export const EXPLOSION_RAY_COUNT = 64;
 export const EXPLOSION_RAY_DAMAGE_SCALE = 2 * Math.PI;
@@ -76,12 +52,15 @@ export const DECOUPLER_ATTRACTION_RADIUS = 4.5; // tile lengths
 export const DECOUPLER_DOCK_MAX_SPEED = 1; // tile-widths/sec
 export const DECOUPLER_DOCK_COOLDOWN = 3; // seconds
 export const DECOUPLER_ATTRACTION_FORCE = 200; // impulse scale for attraction
+export const ATTRACTOR_ANGULAR_STIFFNESS = 200; // torque scale for rotation alignment
+export const ATTRACTOR_ANGULAR_DAMPING = 30; // angular velocity damping during attraction
 
 // --- Hinge ---
-export const HINGE_MOTOR_VELOCITY = 2; // rad/s
-export const HINGE_MOTOR_DAMPING = 50;
+export const HINGE_MOTOR_VELOCITY = 2; // rad/s (unused with setpoint mode)
+export const HINGE_MOTOR_DAMPING = 50; // (unused with setpoint mode)
 export const HINGE_LOCK_STIFFNESS = 1e6;
 export const HINGE_LOCK_DAMPING = 1e4;
+export const HINGE_SETPOINT_STEP = Math.PI / 400; // radians per key press (45°)
 
 // --- Camera ---
 export const CAMERA_DEFAULT_ZOOM = 1;

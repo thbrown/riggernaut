@@ -7,10 +7,12 @@ import {
   DECOUPLER_DETACH_IMPULSE, FIXED_TIMESTEP,
   DECOUPLER_ATTRACTION_RADIUS,
   DECOUPLER_ATTRACTION_FORCE, DECOUPLER_DOCK_MAX_SPEED, TILE_SIZE,
+  ATTRACTOR_ANGULAR_STIFFNESS, ATTRACTOR_ANGULAR_DAMPING,
 } from '../../config/constants';
-import { getComponentDef } from '../../game/component-registry';
-import { splitOrphansToNewBodies } from './DamageSystem';
-import { isDrone } from './RadioSystem';
+import { getComponentDef } from '../../game/components';
+import { sideOffset, resolveSegmentOwner } from './ConnectivitySystem';
+import { splitOrphansToNewBodies } from './BodySplitSystem';
+import { ConnectionGraph, canAttachRuntime } from './ConnectionGraph';
 
 export type DecouplerMode = 'latched' | 'unlatched' | 'attractor';
 
@@ -53,18 +55,79 @@ export function buildDecouplerSides(
   });
 }
 
-/** Process decoupler hotkey presses — cycles: latched → unlatched → attractor → unlatched → ... */
+/** A request to sever a connection, accumulated during pass 1 */
+interface SeverRequest {
+  compId: string;
+  neighborId: string;
+  /** World-space impulse direction (unit vector) */
+  impulseWorldX: number;
+  impulseWorldY: number;
+  /** World-space position of the decoupler (for torque application) */
+  impulsePointX: number;
+  impulsePointY: number;
+  /** The ship this decoupler belongs to */
+  shipBodyHandle: number;
+}
+
+/** Process decoupler hotkey presses — two-pass system:
+ *  Pass 1: Collect all sides transitioning to unlatched, record SeverRequests.
+ *  Pass 2: Sever edges in graph, detect orphans, split with accumulated impulses. */
 export function processDecouplerInput(
   sim: BattleSimulation,
   pressedKeys: Set<string>,
   decouplers: DecouplerState[],
 ) {
+  const severRequests: SeverRequest[] = [];
+
+  // === PASS 1: Collect ===
   for (const dc of decouplers) {
     for (const sideState of dc.sides) {
       if (!sideState.hotkey || !pressedKeys.has(sideState.hotkey)) continue;
 
       if (sideState.mode === 'latched') {
-        detachDecoupler(sim, dc, sideState);
+        // Find ship and component
+        let ship: ShipState | undefined;
+        let comp: ComponentInstance | undefined;
+        for (const s of sim.ships) {
+          const c = s.components.find(c => c.id === dc.compId);
+          if (c) { ship = s; comp = c; break; }
+        }
+        if (!ship || !comp) continue;
+
+        const body = sim.world.getRigidBody(ship.bodyHandle);
+        if (!body) continue;
+
+        const offset = sideOffset(sideState.side);
+        const neighborX = comp.gridX + offset.dx;
+        const neighborY = comp.gridY + offset.dy;
+        const neighbor = ship.components.find(
+          c => c.gridX === neighborX && c.gridY === neighborY && c.health > 0,
+        );
+
+        // Mark unlatched
+        sideState.mode = 'unlatched';
+
+        if (!neighbor) continue;
+
+        // Compute world-space impulse direction
+        const angle = body.rotation();
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        const worldDirX = offset.dx * cos - offset.dy * sin;
+        const worldDirY = offset.dx * sin + offset.dy * cos;
+
+        const dcCollider = sim.world.getCollider(comp.colliderHandle);
+        const dcWorldPos = dcCollider ? dcCollider.translation() : body.translation();
+
+        severRequests.push({
+          compId: dc.compId,
+          neighborId: neighbor.id,
+          impulseWorldX: worldDirX,
+          impulseWorldY: worldDirY,
+          impulsePointX: dcWorldPos.x,
+          impulsePointY: dcWorldPos.y,
+          shipBodyHandle: ship.bodyHandle,
+        });
       } else if (sideState.mode === 'unlatched') {
         sideState.mode = 'attractor';
       } else {
@@ -72,144 +135,180 @@ export function processDecouplerInput(
       }
     }
   }
-}
 
-/** Grid offset for a given side */
-function sideOffset(side: Side): { dx: number; dy: number } {
-  switch (side) {
-    case Side.North: return { dx: 0, dy: -1 };
-    case Side.South: return { dx: 0, dy: 1 };
-    case Side.East: return { dx: 1, dy: 0 };
-    case Side.West: return { dx: -1, dy: 0 };
-  }
-}
+  if (severRequests.length === 0) return;
 
-function detachDecoupler(sim: BattleSimulation, dc: DecouplerState, sideState: DecouplerSideState) {
-  let ship: ShipState | undefined;
-  let comp: ComponentInstance | undefined;
-
-  for (const s of sim.ships) {
-    const c = s.components.find(c => c.id === dc.compId);
-    if (c) { ship = s; comp = c; break; }
+  // === PASS 2: Apply ===
+  // Group sever requests by ship
+  const requestsByShip = new Map<number, SeverRequest[]>();
+  for (const req of severRequests) {
+    let list = requestsByShip.get(req.shipBodyHandle);
+    if (!list) {
+      list = [];
+      requestsByShip.set(req.shipBodyHandle, list);
+    }
+    list.push(req);
   }
 
-  if (!ship || !comp) return;
+  for (const [shipBodyHandle, requests] of requestsByShip) {
+    const ship = sim.ships.find(s => s.bodyHandle === shipBodyHandle);
+    if (!ship) continue;
 
-  const body = sim.world.getRigidBody(ship.bodyHandle);
-  if (!body) return;
-
-  // Find the neighbor on the detaching side (uses rotated side for grid lookup)
-  const offset = sideOffset(sideState.side);
-  const neighborX = comp.gridX + offset.dx;
-  const neighborY = comp.gridY + offset.dy;
-
-  const neighbor = ship.components.find(
-    c => c.gridX === neighborX && c.gridY === neighborY && c.health > 0
-  );
-
-  if (!neighbor) {
-    sideState.mode = 'unlatched';
-    return;
-  }
-
-  // BFS from Command Module, treating the decoupler↔neighbor link as severed
-  const severedLink = new Set([
-    `${dc.compId}:${neighbor.id}`,
-    `${neighbor.id}:${dc.compId}`,
-  ]);
-
-  const adj = new Map<string, string[]>();
-  for (const c of ship.components) {
-    adj.set(c.id, []);
-  }
-  for (let i = 0; i < ship.components.length; i++) {
-    for (let j = i + 1; j < ship.components.length; j++) {
-      const a = ship.components[i];
-      const b = ship.components[j];
-      const dx = Math.abs(a.gridX - b.gridX);
-      const dy = Math.abs(a.gridY - b.gridY);
-      if ((dx === 1 && dy === 0) || (dx === 0 && dy === 1)) {
-        const linkKey = `${a.id}:${b.id}`;
-        const linkKeyRev = `${b.id}:${a.id}`;
-        if (!severedLink.has(linkKey) && !severedLink.has(linkKeyRev)) {
-          adj.get(a.id)!.push(b.id);
-          adj.get(b.id)!.push(a.id);
-        }
+    // Get or create connection graph for this ship
+    let graph = sim.connectionGraphs.get(shipBodyHandle);
+    if (!graph) {
+      // Fallback: build from current state
+      const unlatchedSides = new Map<string, Side[]>();
+      for (const d of sim.decouplers) {
+        const sides = d.sides.filter(s => s.mode !== 'latched').map(s => s.side);
+        if (sides.length > 0) unlatchedSides.set(d.compId, sides);
       }
-    }
-  }
-
-  const visited = new Set<string>();
-  const queue: string[] = [];
-  for (const c of ship.components) {
-    if (c.type === ComponentType.CommandModule) {
-      visited.add(c.id);
-      queue.push(c.id);
-    }
-  }
-
-  while (queue.length > 0) {
-    const id = queue.shift()!;
-    for (const neighborId of adj.get(id) ?? []) {
-      if (!visited.has(neighborId)) {
-        visited.add(neighborId);
-        queue.push(neighborId);
-      }
-    }
-  }
-
-  const orphans = ship.components.filter(c => !visited.has(c.id));
-
-  if (orphans.length > 0) {
-    ship.components = ship.components.filter(c => visited.has(c.id));
-    splitOrphansToNewBodies(sim, ship, orphans, adj);
-
-    // Set owner on orphaned components:
-    // - Space junk (no Radio) → owner = null (freezes current isActive)
-    // - Drones (has Radio) → keep owner as-is (player can still control)
-    for (const s of sim.ships) {
-      if (orphans.some(o => s.components.includes(o)) && !isDrone(s)) {
-        for (const orphan of s.components) {
-          orphan.owner = null;
-        }
-      }
+      graph = ConnectionGraph.fromComponents(ship.components, unlatchedSides);
+      sim.connectionGraphs.set(shipBodyHandle, graph);
     }
 
-    const angle = body.rotation();
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    const dirX = offset.dx;
-    const dirY = offset.dy;
-    const worldDirX = dirX * cos - dirY * sin;
-    const worldDirY = dirX * sin + dirY * cos;
+    // Sever all requested edges
+    for (const req of requests) {
+      graph.sever(req.compId, req.neighborId);
+    }
 
-    // Apply at the decoupler's world position for proper torque
-    const dcCollider = sim.world.getCollider(comp!.colliderHandle);
-    const dcWorldPos = dcCollider ? dcCollider.translation() : body.translation();
+    // Find reachable from anchors
+    const reachable = graph.getReachableFromAnchors(ship.components);
+    const orphans = ship.components.filter(c => !reachable.has(c.id));
 
-    body.applyImpulseAtPoint(
-      { x: -worldDirX * DECOUPLER_DETACH_IMPULSE, y: -worldDirY * DECOUPLER_DETACH_IMPULSE },
-      dcWorldPos,
-      true,
+    if (orphans.length === 0) continue;
+
+    // Remove orphans from ship
+    ship.components = ship.components.filter(c => reachable.has(c.id));
+
+    // Group orphans into clusters via the graph
+    const orphanIds = orphans.map(c => c.id);
+    const clusterIds = graph.getConnectedClusters(orphanIds);
+    const compById = new Map(orphans.map(c => [c.id, c]));
+
+    // For each cluster, compute accumulated impulse from bordering sever requests
+    const clusterComps: ComponentInstance[][] = clusterIds.map(
+      ids => ids.map(id => compById.get(id)!),
     );
 
+    // Build cluster membership lookup
+    const compToCluster = new Map<string, number>();
+    for (let ci = 0; ci < clusterIds.length; ci++) {
+      for (const id of clusterIds[ci]) {
+        compToCluster.set(id, ci);
+      }
+    }
+
+    // Accumulate impulse per cluster
+    const clusterImpulses: Array<{ fx: number; fy: number; px: number; py: number }> = clusterIds.map(
+      () => ({ fx: 0, fy: 0, px: 0, py: 0 }),
+    );
+
+    for (const req of requests) {
+      // The neighbor is in the orphan side — find which cluster
+      const ci = compToCluster.get(req.neighborId);
+      if (ci !== undefined) {
+        clusterImpulses[ci].fx += req.impulseWorldX * DECOUPLER_DETACH_IMPULSE;
+        clusterImpulses[ci].fy += req.impulseWorldY * DECOUPLER_DETACH_IMPULSE;
+        clusterImpulses[ci].px += req.impulsePointX;
+        clusterImpulses[ci].py += req.impulsePointY;
+      }
+      // The compId might be in orphan side too (if decoupler itself is orphaned)
+      const ci2 = compToCluster.get(req.compId);
+      if (ci2 !== undefined) {
+        clusterImpulses[ci2].fx += -req.impulseWorldX * DECOUPLER_DETACH_IMPULSE;
+        clusterImpulses[ci2].fy += -req.impulseWorldY * DECOUPLER_DETACH_IMPULSE;
+        clusterImpulses[ci2].px += req.impulsePointX;
+        clusterImpulses[ci2].py += req.impulsePointY;
+      }
+    }
+
+    // Split orphans using the graph's adjacency
+    const adj = graph.toAdjMap();
+    splitOrphansToNewBodies(sim, ship, orphans, adj, clusterImpulses);
+
+    // Remove orphan nodes from parent ship's graph
+    for (const orphan of orphans) {
+      graph.removeComponent(orphan.id);
+    }
+
+    // Resolve ownership on new ships using resolveSegmentOwner
+    const previousOwner = orphans[0]?.owner ?? null;
     for (const s of sim.ships) {
-      if (s === ship) continue;
-      if (orphans.some(o => s.components.includes(o))) {
-        const orphanBody = sim.world.getRigidBody(s.bodyHandle);
-        if (orphanBody) {
-          orphanBody.applyImpulseAtPoint(
-            { x: worldDirX * DECOUPLER_DETACH_IMPULSE, y: worldDirY * DECOUPLER_DETACH_IMPULSE },
-            dcWorldPos,
+      if (!orphans.some(o => s.components.includes(o))) continue;
+      const newOwner = resolveSegmentOwner(s.components, previousOwner);
+      for (const c of s.components) {
+        c.owner = newOwner;
+      }
+      // Create connection graph for the new ship
+      const subgraph = ConnectionGraph.fromComponents(s.components);
+      sim.connectionGraphs.set(s.bodyHandle, subgraph);
+    }
+
+    // Apply reaction impulse to parent ship
+    const parentBody = sim.world.getRigidBody(shipBodyHandle);
+    if (parentBody) {
+      for (const req of requests) {
+        // Only apply reaction if the decoupler stayed on the parent
+        if (reachable.has(req.compId)) {
+          parentBody.applyImpulseAtPoint(
+            { x: -req.impulseWorldX * DECOUPLER_DETACH_IMPULSE, y: -req.impulseWorldY * DECOUPLER_DETACH_IMPULSE },
+            { x: req.impulsePointX, y: req.impulsePointY },
             true,
           );
         }
       }
     }
+
+    // Apply per-cluster impulses to orphan bodies
+    for (let ci = 0; ci < clusterComps.length; ci++) {
+      const imp = clusterImpulses[ci];
+      if (imp.fx === 0 && imp.fy === 0) continue;
+      const clusterComp = clusterComps[ci][0];
+      if (!clusterComp) continue;
+      const orphanBody = sim.world.getRigidBody(clusterComp.bodyHandle);
+      if (orphanBody) {
+        const reqCount = requests.filter(r => compToCluster.get(r.neighborId) === ci || compToCluster.get(r.compId) === ci).length;
+        const avgPx = reqCount > 0 ? imp.px / reqCount : orphanBody.translation().x;
+        const avgPy = reqCount > 0 ? imp.py / reqCount : orphanBody.translation().y;
+        orphanBody.applyImpulseAtPoint(
+          { x: imp.fx, y: imp.fy },
+          { x: avgPx, y: avgPy },
+          true,
+        );
+      }
+    }
+
+    // Camera smooth transition if player ship was affected
+    if (ship.isPlayer) {
+      const comPos = sim.getPlayerBodyPosition();
+      if (comPos) sim.camera.onMassChange(comPos);
+    }
   }
 
-  sideState.mode = 'unlatched';
-  dc.bodyHandle = comp.bodyHandle;
+  // Update decoupler body handles
+  for (const dc of decouplers) {
+    for (const s of sim.ships) {
+      const comp = s.components.find(c => c.id === dc.compId);
+      if (comp) {
+        dc.bodyHandle = comp.bodyHandle;
+        break;
+      }
+    }
+  }
+}
+
+/** Exported so component def callback can call this.
+ *  Now delegates to the two-pass system via processDecouplerInput. */
+export function detachDecouplerSide(sim: BattleSimulation, dc: DecouplerState, sideState: DecouplerSideState) {
+  // Create a synthetic pressed-keys set containing this side's hotkey
+  // and run through the two-pass system
+  if (!sideState.hotkey) {
+    sideState.mode = 'unlatched';
+    return;
+  }
+  const pressedKeys = new Set<string>([sideState.hotkey]);
+  processDecouplerInput(sim, pressedKeys, [dc]);
 }
 
 /** Compute the world-space direction and dock point for a given attractor side */
@@ -303,9 +402,11 @@ export function processDecouplerAttraction(sim: BattleSimulation, decouplers: De
           const lateralVel = relVx * (-dirY) + relVy * dirX; // perpendicular component
 
           // P term: pull toward dock point (skip if already approaching too fast)
+          // Distance-dependent speed limit: decelerate as section approaches
+          const maxSpeed = MAX_APPROACH_SPEED * Math.max(0.2, dist / DECOUPLER_ATTRACTION_RADIUS);
           let fx = 0;
           let fy = 0;
-          if (approachSpeed < MAX_APPROACH_SPEED) {
+          if (approachSpeed < maxSpeed) {
             const falloff = 1 - dist / DECOUPLER_ATTRACTION_RADIUS;
             const forceMag = DECOUPLER_ATTRACTION_FORCE * falloff;
             fx = (toDockX / dist) * forceMag * FIXED_TIMESTEP;
@@ -336,6 +437,17 @@ export function processDecouplerAttraction(sim: BattleSimulation, decouplers: De
             shipBody.applyImpulseAtPoint({ x: lx, y: ly }, otherPos, true);
             dcBody.applyImpulseAtPoint({ x: -lx, y: -ly }, dcPos, true);
           }
+
+          // Rotational alignment: snap attracted body to nearest 90° relative to decoupler body
+          const angleDiff = shipBody.rotation() - dcBody.rotation();
+          // Normalize to [-π, π]
+          const normAngle = angleDiff - Math.round(angleDiff / (2 * Math.PI)) * 2 * Math.PI;
+          const targetAngleDiff = Math.round(normAngle / (Math.PI / 2)) * (Math.PI / 2);
+          const angleError = normAngle - targetAngleDiff;
+          const relAngvel = shipBody.angvel() - dcBody.angvel();
+          const torque = (-ATTRACTOR_ANGULAR_STIFFNESS * angleError - ATTRACTOR_ANGULAR_DAMPING * relAngvel) * FIXED_TIMESTEP;
+          shipBody.applyTorqueImpulse(torque, true);
+          dcBody.applyTorqueImpulse(-torque, true);
 
           break; // One component per ship per side is enough
         }
@@ -447,10 +559,10 @@ function mergeBodies(sim: BattleSimulation, survivor: ShipState, absorbed: ShipS
   if (!survBody || !absBody) return;
 
   const survHasCM = survivor.components.some(
-    c => c.type === ComponentType.CommandModule && c.health > 0
+    c => getComponentDef(c.type).isConnectivityAnchor && c.health > 0
   );
   const absHasCM = absorbed.components.some(
-    c => c.type === ComponentType.CommandModule && c.health > 0
+    c => getComponentDef(c.type).isConnectivityAnchor && c.health > 0
   );
 
   let actualSurvivor = survivor;
@@ -550,6 +662,7 @@ function mergeBodies(sim: BattleSimulation, survivor: ShipState, absorbed: ShipS
     const newCollider = sim.world.createCollider(colliderDesc, survBodyFinal);
 
     sim.colliderToComponent.delete(comp.colliderHandle);
+    sim.colliderToShip.delete(comp.colliderHandle);
     comp.colliderHandle = newCollider.handle;
     comp.bodyHandle = survBodyFinal.handle;
     sim.colliderToComponent.set(newCollider.handle, comp);
@@ -557,7 +670,7 @@ function mergeBodies(sim: BattleSimulation, survivor: ShipState, absorbed: ShipS
 
   if (actualAbsorbed !== absorbed ? survHasCM : absHasCM) {
     for (const comp of actualAbsorbed.components) {
-      if (comp.type === ComponentType.CommandModule && comp.health > 0) {
+      if (getComponentDef(comp.type).isConnectivityAnchor && comp.health > 0) {
         comp.type = ComponentType.Dummy;
       }
     }
@@ -569,8 +682,30 @@ function mergeBodies(sim: BattleSimulation, survivor: ShipState, absorbed: ShipS
     comp.owner = survivorOwner;
   }
 
+  // Assign random hotkeys to powered components that lack them (player only)
+  if (survivorOwner === 'player') {
+    const usedKeys = new Set<string>();
+    for (const c of [...actualSurvivor.components, ...actualAbsorbed.components]) {
+      if (c.hotkey) usedKeys.add(c.hotkey);
+    }
+    const pool = 'abcdefghijklmnopqrstuvwxyz1234567890'.split('').filter(k => !usedKeys.has(k));
+    for (const comp of actualAbsorbed.components) {
+      if (getComponentDef(comp.type).hasPower && !comp.hotkey && pool.length > 0) {
+        comp.hotkey = pool.splice(Math.floor(Math.random() * pool.length), 1)[0];
+      }
+    }
+  }
+
   actualSurvivor.components.push(...actualAbsorbed.components);
   actualAbsorbed.components = [];
+
+  // Update colliderToShip for all components now on the survivor
+  for (const comp of actualSurvivor.components) {
+    sim.colliderToShip.set(comp.colliderHandle, actualSurvivor);
+  }
+
+  // Record killer chain: absorbed body → survivor body (for camera follow)
+  sim.killerChain.set(absBodyFinal.handle, actualSurvivor.bodyHandle);
 
   sim.world.removeRigidBody(absBodyFinal);
   sim.ships = sim.ships.filter(s => s !== actualAbsorbed);
@@ -598,5 +733,45 @@ function mergeBodies(sim: BattleSimulation, survivor: ShipState, absorbed: ShipS
     if (comp) {
       dc.bodyHandle = comp.bodyHandle;
     }
+  }
+
+  // Phase 6: Merge connection graphs
+  const survGraph = sim.connectionGraphs.get(actualSurvivor.bodyHandle);
+  const absGraph = sim.connectionGraphs.get(actualAbsorbed.bodyHandle);
+  if (survGraph && absGraph) {
+    survGraph.mergeFrom(absGraph);
+  } else if (!survGraph && absGraph) {
+    sim.connectionGraphs.set(actualSurvivor.bodyHandle, absGraph);
+  }
+  // Rebuild edges between the newly merged components (docking creates new adjacency)
+  const mergedGraph = sim.connectionGraphs.get(actualSurvivor.bodyHandle);
+  if (mergedGraph) {
+    // Ensure all components are nodes
+    for (const c of actualSurvivor.components) {
+      mergedGraph.addNode(c.id);
+    }
+    // Add edges for newly adjacent components from the merge
+    // (must check attachable sides to avoid connecting e.g. ram tops)
+    for (const compA of actualSurvivor.components) {
+      for (const compB of actualSurvivor.components) {
+        if (compA.id >= compB.id) continue;
+        if (mergedGraph.hasEdge(compA.id, compB.id)) continue;
+        const dx = Math.abs(compA.gridX - compB.gridX);
+        const dy = Math.abs(compA.gridY - compB.gridY);
+        if ((dx === 1 && dy === 0) || (dx === 0 && dy === 1)) {
+          if (canAttachRuntime(compA, compB)) {
+            mergedGraph.addEdge(compA.id, compB.id);
+          }
+        }
+      }
+    }
+  }
+  // Delete absorbed ship's graph entry
+  sim.connectionGraphs.delete(actualAbsorbed.bodyHandle);
+
+  // Camera smooth transition if player ship involved
+  if (actualSurvivor.isPlayer) {
+    const comPos = sim.getPlayerBodyPosition();
+    if (comPos) sim.camera.onMassChange(comPos);
   }
 }

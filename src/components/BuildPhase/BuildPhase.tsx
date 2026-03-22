@@ -4,7 +4,7 @@ import { ComponentType, Side } from '../../types/components';
 import { PlacedComponent, GridPosition, rotateSide } from '../../types/grid';
 import { useGame } from '../../state/GameContext';
 import { computeAttachment } from '../../game/grid-logic';
-import { getComponentDef } from '../../game/component-registry';
+import { getComponentDef } from '../../game/components';
 import { getHingeStartAngleSteps } from './ComponentRenderer';
 import { ComponentPanel } from './ComponentPanel';
 import { BuildGrid } from './BuildGrid';
@@ -29,7 +29,7 @@ export function BuildPhase() {
 
   // Check if ship is valid (has exactly one command module, all attached)
   const { unattached } = computeAttachment(components);
-  const commandModuleCount = components.filter(c => c.type === ComponentType.CommandModule).length;
+  const commandModuleCount = components.filter(c => getComponentDef(c.type as ComponentType).isConnectivityAnchor).length;
   const hasCommandModule = commandModuleCount === 1;
   const tooManyCommandModules = commandModuleCount > 1;
   const allAttached = unattached.size === 0;
@@ -86,14 +86,13 @@ export function BuildPhase() {
   const handleCycleSides = useCallback((id: string) => {
     updateComponents(components.map(c => {
       if (c.id !== id) return c;
-      const isHinge = c.type === ComponentType.Hinge90 || c.type === ComponentType.Hinge180;
+      const def = getComponentDef(c.type as ComponentType);
       let baseSides: Side[];
-      if (isHinge) {
+      if (def.colliderShape === 'circle' && def.config.kind === 'hinge') {
         const step = c.hingeStartAngle ?? 0;
         const movableSide = rotateSide(Side.East, step);
         baseSides = [Side.West, movableSide];
       } else {
-        const def = getComponentDef(c.type as ComponentType);
         baseSides = [...def.attachableSides];
       }
 
@@ -158,6 +157,13 @@ export function BuildPhase() {
             )}
           </div>
           <div className="build-phase__actions">
+            <button
+              className="build-phase__btn"
+              onClick={() => updateComponents([])}
+              disabled={components.length === 0}
+            >
+              Clear All
+            </button>
             <button
               className="build-phase__btn"
               onClick={() => dispatch({ type: 'TOGGLE_SANDBOX' })}

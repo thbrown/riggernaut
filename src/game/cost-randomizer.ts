@@ -1,6 +1,6 @@
 import { ComponentType } from '../types/components';
 import { COST_MIN, COST_MAX } from '../config/constants';
-import { ALL_COMPONENT_TYPES } from './component-registry';
+import { ALL_COMPONENT_TYPES } from './components';
 
 /** Components whose costs must be linearly increasing with size */
 const LINEAR_GROUPS: ComponentType[][] = [

@@ -1,14 +1,13 @@
 import { BattleSimulation, ShipState } from './BattleSimulation';
-import { Side } from '../types/components';
-import { DecouplerMode } from './systems/DecouplerSystem';
-import { ComponentType } from '../types/components';
 import {
   PIXELS_PER_METER, TILE_SIZE,
-  CAMERA_DEFAULT_ZOOM, CAMERA_MIN_ZOOM, CAMERA_MAX_ZOOM, CAMERA_ZOOM_STEP, CAMERA_LERP_SPEED,
   MINIMAP_SIZE, MINIMAP_RANGE,
-  ENGINE_EXHAUST_SHAPE,
 } from '../config/constants';
-import { getComponentColor } from '../components/BuildPhase/ComponentRenderer';
+import { Side, ALL_SIDES } from '../types/components';
+import { rotateSide } from '../types/grid';
+import { sideOffset } from './systems/ConnectivitySystem';
+import { CameraSystem } from './systems/CameraSystem';
+import { getComponentDef } from '../game/components';
 import { Projectile } from './entities/Projectile';
 import { activeExplosions } from './systems/ExplosionSystem';
 import { EXPLOSION_GLOW_RADIUS_MIN, EXPLOSION_GLOW_RADIUS_MAX } from '../config/display';
@@ -16,17 +15,7 @@ import {
   updateParticles, drawParticles,
   spawnFireParticles, spawnExplosionParticles,
 } from './ParticleSystem';
-import { DECOUPLER_ATTRACTION_RADIUS } from '../config/constants';
-
-/** Convert a Side to a local-space unit direction (pre-rotation) */
-function sideToLocalDir(side: Side): { dx: number; dy: number } {
-  switch (side) {
-    case Side.North: return { dx: 0, dy: -1 };
-    case Side.South: return { dx: 0, dy: 1 };
-    case Side.East: return { dx: 1, dy: 0 };
-    case Side.West: return { dx: -1, dy: 0 };
-  }
-}
+import { hotkeyDisplayChar } from '../utils/hotkey-display';
 
 interface StarField {
   stars: Array<{ x: number; y: number; size: number; brightness: number }>;
@@ -36,10 +25,7 @@ export class BattleRenderer {
   private ctx: CanvasRenderingContext2D;
   private width = 0;
   private height = 0;
-  private cameraX = 0;
-  private cameraY = 0;
-  private zoom = CAMERA_DEFAULT_ZOOM;
-  private targetZoom = CAMERA_DEFAULT_ZOOM;
+  private camera: CameraSystem | null = null;
   private starField: StarField;
   constructor(private canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d')!;
@@ -68,17 +54,15 @@ export class BattleRenderer {
   }
 
   zoomIn() {
-    this.targetZoom = Math.min(this.targetZoom + CAMERA_ZOOM_STEP, CAMERA_MAX_ZOOM);
+    this.camera?.zoomIn();
   }
 
   zoomOut() {
-    this.targetZoom = Math.max(this.targetZoom - CAMERA_ZOOM_STEP, CAMERA_MIN_ZOOM);
+    this.camera?.zoomOut();
   }
 
   adjustZoom(delta: number) {
-    this.targetZoom = Math.max(CAMERA_MIN_ZOOM, Math.min(CAMERA_MAX_ZOOM,
-      this.targetZoom - delta * CAMERA_ZOOM_STEP
-    ));
+    this.camera?.adjustZoom(delta);
   }
 
   render(sim: BattleSimulation, alpha: number) {
@@ -86,21 +70,9 @@ export class BattleRenderer {
     const w = this.width;
     const h = this.height;
 
-    // Camera locks to player ship's center of mass (interpolated by alpha)
-    const playerShip = sim.getPlayerShip();
-    if (playerShip) {
-      const curCom = sim.getPlayerBodyPosition(); // returns worldCom()
-      const prevCom = playerShip.prevCom ?? playerShip.prevPosition;
-      if (curCom) {
-        const ix = prevCom.x + (curCom.x - prevCom.x) * alpha;
-        const iy = prevCom.y + (curCom.y - prevCom.y) * alpha;
-        this.cameraX = ix * PIXELS_PER_METER;
-        this.cameraY = iy * PIXELS_PER_METER;
-      }
-    }
-
-    // Smooth zoom only
-    this.zoom += (this.targetZoom - this.zoom) * CAMERA_LERP_SPEED;
+    // Delegate camera to CameraSystem
+    this.camera = sim.camera;
+    this.camera.updateForRender(sim, alpha);
 
     // Clear
     ctx.fillStyle = '#0a0a1a';
@@ -109,9 +81,10 @@ export class BattleRenderer {
     ctx.save();
 
     // Camera transform: center screen, then zoom, then translate
+    const cam = this.camera!;
     ctx.translate(w / 2, h / 2);
-    ctx.scale(this.zoom, this.zoom);
-    ctx.translate(-this.cameraX, -this.cameraY);
+    ctx.scale(cam.zoom, cam.zoom);
+    ctx.translate(-cam.x, -cam.y);
 
     // Draw star field (parallax)
     this.drawStars(ctx);
@@ -149,9 +122,10 @@ export class BattleRenderer {
 
   private drawStars(ctx: CanvasRenderingContext2D) {
     const parallax = 0.3;
+    const cam = this.camera!;
     for (const star of this.starField.stars) {
-      const sx = star.x + this.cameraX * parallax;
-      const sy = star.y + this.cameraY * parallax;
+      const sx = star.x + cam.x * parallax;
+      const sy = star.y + cam.y * parallax;
       ctx.fillStyle = `rgba(255, 255, 255, ${star.brightness})`;
       ctx.beginPath();
       ctx.arc(sx, sy, star.size, 0, Math.PI * 2);
@@ -202,13 +176,14 @@ export class BattleRenderer {
       const collider = sim.world.getCollider(comp.colliderHandle);
       if (!collider) continue;
 
+      const def = getComponentDef(comp.type);
+
       // Get local offset (relative to body)
       const collWorld = collider.translation();
       const bodyWorld = body.translation();
       const bodyAngle = body.rotation();
       const dxW = collWorld.x - bodyWorld.x;
       const dyW = collWorld.y - bodyWorld.y;
-      // Rotate back by body angle to get local coords
       const cosA = Math.cos(-bodyAngle);
       const sinA = Math.sin(-bodyAngle);
       const localX = dxW * cosA - dyW * sinA;
@@ -219,30 +194,24 @@ export class BattleRenderer {
 
       ctx.save();
       ctx.translate(cx, cy);
-      // Apply component rotation
       ctx.rotate(comp.rotation * Math.PI / 2);
 
       // Draw component body
-      const isHinge = comp.type === ComponentType.Hinge90 || comp.type === ComponentType.Hinge180;
-      const color = getComponentColor(comp.type);
-      ctx.fillStyle = color;
+      const isCircle = def.colliderShape === 'circle';
+      ctx.fillStyle = def.color;
       ctx.globalAlpha = 0.85;
 
-      if (isHinge) {
-        // Circular body for hinges (matches physics collider)
+      if (isCircle) {
         ctx.beginPath();
         ctx.arc(0, 0, halfSize - 1, 0, Math.PI * 2);
         ctx.fill();
-        // Circular border
         ctx.strokeStyle = ship.isPlayer ? '#88ccff' : '#ff6644';
         ctx.lineWidth = 1.5;
         ctx.stroke();
-        // Faint square outline for grid context
         ctx.strokeStyle = ship.isPlayer ? 'rgba(136,204,255,0.25)' : 'rgba(255,102,68,0.25)';
         ctx.strokeRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
       } else {
         ctx.fillRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
-        // Border
         ctx.strokeStyle = ship.isPlayer ? '#88ccff' : '#ff6644';
         ctx.lineWidth = 1.5;
         ctx.strokeRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
@@ -251,15 +220,15 @@ export class BattleRenderer {
       ctx.globalAlpha = 1;
 
       // Component type decoration
-      this.drawComponentDecoration(ctx, comp.type, halfSize);
+      def.drawDecoration?.(ctx, halfSize, comp);
 
-      // Damage flash: red pulse when recently hit
+      // Damage flash
       if (comp.lastDamageTick !== undefined) {
         const ticksSince = sim.tickCount - comp.lastDamageTick;
         if (ticksSince < 30) {
           const flashAlpha = 0.6 * (1 - ticksSince / 30) * (0.5 + 0.5 * Math.sin(ticksSince * 0.6));
           ctx.fillStyle = `rgba(255, 50, 50, ${flashAlpha})`;
-          if (isHinge) {
+          if (isCircle) {
             ctx.beginPath();
             ctx.arc(0, 0, halfSize - 1, 0, Math.PI * 2);
             ctx.fill();
@@ -269,12 +238,12 @@ export class BattleRenderer {
         }
       }
 
-      // Damage visualization: red overlay proportional to damage taken
+      // Damage visualization
       const healthPct = comp.health / comp.maxHealth;
       if (healthPct < 1) {
         const damageAlpha = (1 - healthPct) * 0.6;
         ctx.fillStyle = `rgba(255, 0, 0, ${damageAlpha})`;
-        if (isHinge) {
+        if (isCircle) {
           ctx.beginPath();
           ctx.arc(0, 0, halfSize - 1, 0, Math.PI * 2);
           ctx.fill();
@@ -282,23 +251,16 @@ export class BattleRenderer {
           ctx.fillRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
         }
 
-        // Crack lines at every 10% damage threshold (90%, 80%, 70%... etc.)
         const damagePct = 1 - healthPct;
-        const crackCount = Math.floor(damagePct * 10); // 0-10 cracks
+        const crackCount = Math.floor(damagePct * 10);
         ctx.strokeStyle = `rgba(255, 100, 100, ${0.3 + damagePct * 0.5})`;
         ctx.lineWidth = 1;
-        // Seed-based crack positions for visual consistency
         const crackSeeds = [
-          [-0.5, -0.3, 0.2, 0.4],
-          [0.3, -0.5, -0.1, 0.6],
-          [-0.6, 0.1, 0.5, -0.2],
-          [-0.3, -0.6, 0.4, 0.3],
-          [0.5, -0.4, -0.2, 0.5],
-          [-0.4, 0.5, 0.6, -0.1],
-          [0.2, -0.2, -0.5, 0.6],
-          [-0.6, -0.5, 0.3, 0.1],
-          [0.4, 0.2, -0.3, -0.4],
-          [-0.1, 0.6, 0.5, -0.6],
+          [-0.5, -0.3, 0.2, 0.4], [0.3, -0.5, -0.1, 0.6],
+          [-0.6, 0.1, 0.5, -0.2], [-0.3, -0.6, 0.4, 0.3],
+          [0.5, -0.4, -0.2, 0.5], [-0.4, 0.5, 0.6, -0.1],
+          [0.2, -0.2, -0.5, 0.6], [-0.6, -0.5, 0.3, 0.1],
+          [0.4, 0.2, -0.3, -0.4], [-0.1, 0.6, 0.5, -0.6],
         ];
         for (let ci = 0; ci < crackCount && ci < crackSeeds.length; ci++) {
           const [x1, y1, x2, y2] = crackSeeds[ci];
@@ -308,10 +270,7 @@ export class BattleRenderer {
           ctx.stroke();
         }
 
-        // Fire particles on heavily damaged components (below 30% health)
-        // Spawn into the world-space particle system
         if (healthPct < 0.3) {
-          // Use interpolated position so particles match rendered ship position
           const cos2 = Math.cos(iAngle);
           const sin2 = Math.sin(iAngle);
           const worldCompX = ix + (localX * cos2 - localY * sin2);
@@ -324,181 +283,30 @@ export class BattleRenderer {
         }
       }
 
-      // Draw engine exhaust in component-local space
-      // Canvas is already transformed to component center + rotation,
-      // so +Y is always the exhaust direction (south = functional side).
-      const isEngine = comp.type === ComponentType.EngineSmall ||
-        comp.type === ComponentType.EngineMedium ||
-        comp.type === ComponentType.EngineLarge;
-      if (isEngine) {
-        const showExhaust = comp.isActive;
-        if (showExhaust) {
-          const engineSize = comp.type === ComponentType.EngineSmall ? 'small'
-            : comp.type === ComponentType.EngineMedium ? 'medium' : 'large';
-          const shape = ENGINE_EXHAUST_SHAPE[engineSize];
-          // Particle bounds derived from ENGINE_EXHAUST_SHAPE — same constant
-          // used by ExhaustDamageSystem, so visuals and damage stay in sync.
-          const majPx = shape.semiMajor * PIXELS_PER_METER;
-          const minPx = shape.semiMinor * PIXELS_PER_METER;
-          const particleCount = engineSize === 'small' ? 10
-            : engineSize === 'medium' ? 18 : 40;
+      // Type-specific active effects (engine exhaust, blaster recoil, explosive glow, decoupler dots/particles)
+      def.drawEffect?.(ctx, halfSize, comp, sim);
 
-          const prevComposite = ctx.globalCompositeOperation;
-          ctx.globalCompositeOperation = 'lighter';
-
-          // Exhaust origin in local space: back edge of engine tile
-          const oy = halfSize;
-
-          for (let i = 0; i < particleCount; i++) {
-            // Sample random point within a tapered plume shape:
-            // lateral spread starts narrow at engine edge, fans out along exhaust
-            // Bias toward origin (power curve) so particles cluster near engine = slower feel
-            const along = Math.pow(Math.random(), 1.5) * majPx;
-            const t = along / majPx; // 0 at origin, 1 at tip
-            const taper = 0.15 + 0.85 * t; // narrow at nozzle, full width at end
-            const maxPerp = minPx * Math.sqrt(1 - t * t) * taper;
-            const perp = (Math.random() - 0.5) * 2 * maxPerp;
-
-            // Elliptical distance (0 at origin, 1 at boundary)
-            const na = along / majPx;
-            const nb = perp / minPx;
-            const d = Math.sqrt(na * na + nb * nb);
-
-            // Clip visual to 85% of damage ellipse so particles don't appear
-            // where damage is negligible (avoids misleading overlap on edge tiles)
-            if (d > 0.85) continue;
-
-            // Gradual color transition: continuous lerp from white-yellow (d=0)
-            // through orange to red (d=1), with alpha fading toward the edge
-            const px = perp;
-            const py = oy + along;
-            const radius = 3 + d * 4;
-
-            // RGB channels lerp smoothly across the full 0–1 range
-            const r = 255;
-            const g = Math.floor(255 - d * 225 + Math.random() * 20); // 255 → ~30
-            const b = Math.floor(220 * (1 - d * 1.4) + Math.random() * 10); // 220 → 0
-            const a = 0.8 - d * 0.6 + Math.random() * 0.1; // 0.8 → ~0.2
-
-            ctx.fillStyle = `rgba(${r}, ${Math.max(0, g)}, ${Math.max(0, b)}, ${Math.max(0.05, a)})`;
-            ctx.beginPath();
-            ctx.arc(px, py, radius, 0, Math.PI * 2);
-            ctx.fill();
-          }
-
-          ctx.globalCompositeOperation = prevComposite;
-
-          // Engine glow: subtle yellow overlay on engine body when active
-          const flicker = Math.sin(sim.tickCount * 0.3 + comp.colliderHandle) * 0.05;
-          ctx.fillStyle = `rgba(255, 200, 50, ${0.15 + flicker})`;
-          ctx.fillRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
-        }
-      }
-
-      // Blaster recoil animation — impulse on fire, scaled by blaster size
-      if (comp.lastFireTick !== undefined) {
-        const ticksSinceFire = sim.tickCount - comp.lastFireTick;
-        if (ticksSinceFire < 8) {
-          const recoilMag = comp.type === ComponentType.BlasterLarge ? 4
-            : comp.type === ComponentType.BlasterMedium ? 2.5 : 1.5;
-          const t = ticksSinceFire / 8; // 0→1
-          const recoil = recoilMag * Math.exp(-t * 4) * Math.cos(t * Math.PI * 2);
-          ctx.translate(0, recoil);
-        }
-      }
-
-      // Explosive countdown glow
-      if (comp.type === ComponentType.Explosive && comp.detonationCountdown !== undefined && comp.detonationCountdown > 0) {
-        const progress = 1 - comp.detonationCountdown / 60;
-        const pulse = 0.3 + 0.7 * progress;
-        const flicker = Math.sin(sim.tickCount * (0.3 + progress * 1.5)) * 0.15;
-        ctx.fillStyle = `rgba(255, 150, 0, ${(pulse + flicker) * 0.6})`;
-        ctx.fillRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
-      }
-
-      // Decoupler side indicators: filled = latched, hollow = unlatched, pulsing cyan = attractor
-      if (comp.type === ComponentType.Decoupler) {
-        const dcState = sim.decouplers.find(d => d.compId === comp.id);
-        const dotR = 3;
-        const dotOffset = halfSize * 0.6;
-        // Dots in component-local space (canvas already rotated by comp.rotation)
-        const dotPositions: Array<{ x: number; y: number; baseSide: Side }> = [
-          { x: 0, y: -dotOffset, baseSide: Side.North },
-          { x: dotOffset, y: 0, baseSide: Side.East },
-          { x: 0, y: dotOffset, baseSide: Side.South },
-          { x: -dotOffset, y: 0, baseSide: Side.West },
-        ];
-        for (const dot of dotPositions) {
-          // Match by baseSide to find the correct side state
-          const sideState = dcState?.sides.find(s => s.baseSide === dot.baseSide);
-          const mode: DecouplerMode = sideState?.mode ?? 'latched';
-
-          ctx.beginPath();
-          ctx.arc(dot.x, dot.y, dotR, 0, Math.PI * 2);
-          if (mode === 'latched') {
-            ctx.fillStyle = '#fff';
-            ctx.fill();
-          } else if (mode === 'attractor') {
-            // Pulsing cyan for attractor mode
-            const pulse = 0.5 + 0.5 * Math.sin(sim.tickCount * 0.15);
-            ctx.fillStyle = `rgba(0, 255, 220, ${0.5 + pulse * 0.5})`;
-            ctx.fill();
-            // Glow ring
-            ctx.strokeStyle = `rgba(0, 255, 220, ${pulse * 0.6})`;
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.arc(dot.x, dot.y, dotR + 2 + pulse * 2, 0, Math.PI * 2);
-            ctx.stroke();
-          } else {
-            // Hollow for unlatched
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
+      // Disconnected edge glow — orange/amber line on any adjacent edge
+      // that has no active connection (severed decoupler OR non-attachable side like ram top)
+      const shipGraph = sim.getConnectionGraph(ship.bodyHandle);
+      if (shipGraph) {
+        for (const side of ALL_SIDES) {
+          const worldSide = rotateSide(side, comp.rotation);
+          const off = sideOffset(worldSide);
+          const nx = comp.gridX + off.dx;
+          const ny = comp.gridY + off.dy;
+          // Look for neighbor in same body group (same physics body)
+          const neighbor = comps.find(c => c.gridX === nx && c.gridY === ny && c !== comp);
+          if (neighbor && !shipGraph.hasActiveEdge(comp.id, neighbor.id)) {
+            drawDisconnectedEdgeGlow(ctx, halfSize, side);
           }
         }
       }
 
-      // Hotkey labels on player-owned components (includes drones)
+      // Hotkey labels
       if (comp.owner === 'player') {
-        if (comp.type === ComponentType.Decoupler) {
-          // Per-edge hotkey labels matching UI storage:
-          // index 0 (North) = comp.hotkey, index 1+ = comp.hotkeys[i-1]
-          ctx.font = '8px monospace';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          const edgeOffset = halfSize * 0.75;
-          const edgePositions = [
-            { x: 0, y: -edgeOffset },  // North
-            { x: edgeOffset, y: 0 },   // East
-            { x: 0, y: edgeOffset },   // South
-            { x: -edgeOffset, y: 0 },  // West
-          ];
-          for (let ei = 0; ei < edgePositions.length; ei++) {
-            const hk = ei === 0 ? comp.hotkey : comp.hotkeys?.[ei - 1];
-            if (!hk) continue;
-            const ep = edgePositions[ei];
-            ctx.fillStyle = 'rgba(0,0,0,0.7)';
-            ctx.fillRect(ep.x - 6, ep.y - 5, 12, 10);
-            ctx.fillStyle = '#fff';
-            ctx.fillText(hk.toUpperCase(), ep.x, ep.y);
-          }
-        } else if (isHinge && (comp.hotkey || comp.hotkeys?.[0])) {
-          // Two hotkey labels on East/West edges for hinge left/right
-          ctx.font = '8px monospace';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          const edgeOffset = halfSize * 0.7;
-          const hingeKeys = [
-            { x: -edgeOffset, y: 0, key: comp.hotkey },       // Left
-            { x: edgeOffset, y: 0, key: comp.hotkeys?.[0] },  // Right
-          ];
-          for (const hk of hingeKeys) {
-            if (!hk.key) continue;
-            ctx.fillStyle = 'rgba(0,0,0,0.7)';
-            ctx.fillRect(hk.x - 6, hk.y - 5, 12, 10);
-            ctx.fillStyle = '#fff';
-            ctx.fillText(hk.key.toUpperCase(), hk.x, hk.y);
-          }
+        if (def.drawHotkeyLabel) {
+          def.drawHotkeyLabel(ctx, halfSize, comp);
         } else if (comp.hotkey) {
           ctx.fillStyle = 'rgba(0,0,0,0.6)';
           ctx.fillRect(-8, -8, 16, 14);
@@ -506,41 +314,7 @@ export class BattleRenderer {
           ctx.font = '10px monospace';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText(comp.hotkey.toUpperCase(), 0, 0);
-        }
-      }
-
-      // Attractor particle effect: draw inward-flowing particles in component-local space
-      if (comp.type === ComponentType.Decoupler) {
-        const dcState2 = sim.decouplers.find(d => d.compId === comp.id);
-        const attractorSides2 = dcState2?.sides.filter(s => s.mode === 'attractor') ?? [];
-        if (attractorSides2.length > 0) {
-          const attractRadPx = DECOUPLER_ATTRACTION_RADIUS * PIXELS_PER_METER;
-          const prevComposite = ctx.globalCompositeOperation;
-          ctx.globalCompositeOperation = 'lighter';
-
-          for (const side of attractorSides2) {
-            // baseSide gives direction in component-local space (canvas already rotated)
-            const dir = sideToLocalDir(side.baseSide);
-
-            // Draw ~10 small shrinking circles flowing inward
-            for (let pi = 0; pi < 10; pi++) {
-              // Deterministic-ish animation using tickCount + particle index
-              const t = ((sim.tickCount * 0.03 + pi * 0.1) % 1); // 0→1 inward progress
-              const dist = (1 - t) * attractRadPx;
-              const spread = (Math.sin(pi * 7.3 + sim.tickCount * 0.02) * 0.4) * attractRadPx * 0.3;
-              const px = dir.dx * dist - dir.dy * spread;
-              const py = dir.dy * dist + dir.dx * spread;
-              const r = (1.5 + (1 - t) * 2);
-              const a = 0.3 + t * 0.5;
-              ctx.fillStyle = `rgba(0, 255, 220, ${a})`;
-              ctx.beginPath();
-              ctx.arc(px, py, r, 0, Math.PI * 2);
-              ctx.fill();
-            }
-          }
-
-          ctx.globalCompositeOperation = prevComposite;
+          ctx.fillText(hotkeyDisplayChar(comp.hotkey), 0, 0);
         }
       }
 
@@ -551,95 +325,6 @@ export class BattleRenderer {
     } // end body group loop
   }
 
-  /** Draw type-specific decorative icon on a component (canvas already at component center + rotated) */
-  private drawComponentDecoration(ctx: CanvasRenderingContext2D, type: ComponentType, hs: number) {
-    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-    ctx.fillStyle = 'rgba(255,255,255,0.7)';
-    ctx.lineWidth = 1.2;
-    const s = hs * 0.6; // decoration scale factor
-
-    switch (type) {
-      case ComponentType.CommandModule:
-        // Diamond
-        ctx.beginPath();
-        ctx.moveTo(0, -s); ctx.lineTo(s, 0); ctx.lineTo(0, s); ctx.lineTo(-s, 0);
-        ctx.closePath(); ctx.stroke();
-        break;
-
-      case ComponentType.EngineSmall:
-      case ComponentType.EngineMedium:
-      case ComponentType.EngineLarge: {
-        // Nozzle rectangle at bottom
-        const nw = type === ComponentType.EngineSmall ? s * 0.5
-          : type === ComponentType.EngineMedium ? s * 0.7 : s;
-        ctx.fillStyle = 'rgba(255,136,0,0.7)';
-        ctx.fillRect(-nw, hs * 0.3, nw * 2, hs * 0.5);
-        break;
-      }
-
-      case ComponentType.Ram:
-        // Triangle pointing up
-        ctx.beginPath();
-        ctx.moveTo(0, -s); ctx.lineTo(-s * 0.7, s * 0.3); ctx.lineTo(s * 0.7, s * 0.3);
-        ctx.closePath(); ctx.fillStyle = 'rgba(255,100,100,0.7)'; ctx.fill();
-        break;
-
-      case ComponentType.BlasterSmall:
-      case ComponentType.BlasterMedium:
-      case ComponentType.BlasterLarge: {
-        // Barrel at top
-        const bw = type === ComponentType.BlasterSmall ? 2
-          : type === ComponentType.BlasterMedium ? 3 : 5;
-        ctx.fillRect(-bw, -hs + 1, bw * 2, s * 1.2);
-        break;
-      }
-
-      case ComponentType.Explosive:
-        // Warning circle
-        ctx.beginPath();
-        ctx.arc(0, 0, s * 0.55, 0, Math.PI * 2);
-        ctx.stroke();
-        break;
-
-      case ComponentType.Radio:
-        // Antenna lines
-        ctx.beginPath();
-        ctx.moveTo(0, -s * 0.2); ctx.lineTo(-s * 0.6, -s);
-        ctx.moveTo(0, -s * 0.2); ctx.lineTo(s * 0.6, -s);
-        ctx.moveTo(0, -s * 0.2); ctx.lineTo(0, s * 0.4);
-        ctx.stroke();
-        break;
-
-      case ComponentType.Hinge90:
-      case ComponentType.Hinge180: {
-        const r = s * 0.55;
-        const arcR = s * 0.35;
-        const halfRange = type === ComponentType.Hinge90 ? Math.PI / 4 : Math.PI / 2;
-        // Center dot
-        ctx.beginPath();
-        ctx.arc(0, 0, 2, 0, Math.PI * 2);
-        ctx.fill();
-        // Fixed side line (West / left attachment)
-        ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.lineTo(Math.cos(Math.PI) * r, Math.sin(Math.PI) * r);
-        ctx.stroke();
-        // Sweep limit lines (East / right attachment side)
-        ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.lineTo(Math.cos(-halfRange) * r, Math.sin(-halfRange) * r);
-        ctx.moveTo(0, 0);
-        ctx.lineTo(Math.cos(halfRange) * r, Math.sin(halfRange) * r);
-        ctx.stroke();
-        // Arc sweep indicator
-        ctx.beginPath();
-        ctx.arc(0, 0, arcR, -halfRange, halfRange);
-        ctx.strokeStyle = 'rgba(255,255,255,0.4)';
-        ctx.stroke();
-        break;
-      }
-    }
-  }
 
   private drawProjectile(ctx: CanvasRenderingContext2D, proj: Projectile) {
     const px = proj.x * PIXELS_PER_METER;
@@ -839,8 +524,8 @@ export class BattleRenderer {
       if (!body) continue;
       const pos = body.translation();
 
-      const relX = (pos.x * PIXELS_PER_METER - this.cameraX) / mmRange;
-      const relY = (pos.y * PIXELS_PER_METER - this.cameraY) / mmRange;
+      const relX = (pos.x * PIXELS_PER_METER - this.camera!.x) / mmRange;
+      const relY = (pos.y * PIXELS_PER_METER - this.camera!.y) / mmRange;
 
       if (Math.abs(relX) > 0.5 || Math.abs(relY) > 0.5) continue;
 
@@ -858,15 +543,15 @@ export class BattleRenderer {
     // Direction indicators on screen edges for off-screen enemies
     for (const ship of sim.ships) {
       if (ship.isPlayer) continue;
-      const hasCmd = ship.components.some(c => c.type === ComponentType.CommandModule && c.health > 0);
+      const hasCmd = ship.components.some(c => getComponentDef(c.type).isConnectivityAnchor && c.health > 0);
       if (!hasCmd) continue;
 
       const body = sim.world.getRigidBody(ship.bodyHandle);
       if (!body) continue;
       const pos = body.translation();
 
-      const screenX = (pos.x * PIXELS_PER_METER - this.cameraX) * this.zoom + w / 2;
-      const screenY = (pos.y * PIXELS_PER_METER - this.cameraY) * this.zoom + h / 2;
+      const screenX = (pos.x * PIXELS_PER_METER - this.camera!.x) * this.camera!.zoom + w / 2;
+      const screenY = (pos.y * PIXELS_PER_METER - this.camera!.y) * this.camera!.zoom + h / 2;
 
       // Only show indicator if off screen
       const margin = 40;
@@ -906,4 +591,47 @@ export class BattleRenderer {
       ctx.restore();
     }
   }
+}
+
+/** Draw a semi-transparent orange/amber glow on a disconnected edge.
+ *  Drawn in component-local space (pre-rotation already applied). */
+function drawDisconnectedEdgeGlow(ctx: CanvasRenderingContext2D, halfSize: number, side: Side) {
+  const glowWidth = 3;
+  const edgeInset = 1;
+  ctx.save();
+
+  // Position and orient the glow line based on side
+  let x: number, y: number, w: number, h: number;
+  switch (side) {
+    case Side.North:
+      x = -halfSize + edgeInset; y = -halfSize; w = (halfSize - edgeInset) * 2; h = glowWidth;
+      break;
+    case Side.South:
+      x = -halfSize + edgeInset; y = halfSize - glowWidth; w = (halfSize - edgeInset) * 2; h = glowWidth;
+      break;
+    case Side.East:
+      x = halfSize - glowWidth; y = -halfSize + edgeInset; w = glowWidth; h = (halfSize - edgeInset) * 2;
+      break;
+    case Side.West:
+      x = -halfSize; y = -halfSize + edgeInset; w = glowWidth; h = (halfSize - edgeInset) * 2;
+      break;
+  }
+
+  // Soft glow
+  ctx.shadowColor = 'rgba(255, 180, 50, 0.6)';
+  ctx.shadowBlur = 4;
+  ctx.fillStyle = 'rgba(255, 160, 30, 0.5)';
+  ctx.fillRect(x, y, w, h);
+
+  // Bright core
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(255, 200, 80, 0.7)';
+  const coreInset = 0.5;
+  if (side === Side.North || side === Side.South) {
+    ctx.fillRect(x + coreInset, y + coreInset, w - coreInset * 2, h - coreInset * 2);
+  } else {
+    ctx.fillRect(x + coreInset, y + coreInset, w - coreInset * 2, h - coreInset * 2);
+  }
+
+  ctx.restore();
 }

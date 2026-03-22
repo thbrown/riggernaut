@@ -1,22 +1,23 @@
 import RAPIER from '@dimforge/rapier2d-compat';
 import { ShipBlueprint } from '../types/physics';
 import { ComponentType } from '../types/components';
-import { getComponentDef } from '../game/component-registry';
+import { getComponentDef } from '../game/components';
 import { ComponentInstance, createComponentInstance } from './entities/ComponentInstance';
 import { InputManager } from './InputManager';
-import { ENGINE_THRUST, TILE_SIZE, FIXED_TIMESTEP, STARTING_DIST, BATTLE_COUNTDOWN_SECONDS } from '../config/constants';
-import { rotateSide } from '../types/grid';
-import { Side } from '../types/components';
-import { processCollisionDamage, processDestruction, checkWinLoss, detectAndSplitDisconnected } from './systems/DamageSystem';
+import { TILE_SIZE, STARTING_DIST, BATTLE_COUNTDOWN_SECONDS } from '../config/constants';
+import { detectAndSplitDisconnected } from './systems/DestructionSystem';
 import { updateRammerAI, updateShooterAI, AIType } from './systems/AISystem';
 import { Projectile } from './entities/Projectile';
 import { processBlasterFire, updateProjectiles } from './systems/ProjectileSystem';
-import { processExplosions, checkAutoDetonate, detonateExplosive } from './systems/ExplosionSystem';
-import { processExhaustDamage } from './systems/ExhaustDamageSystem';
+import { detonateExplosive } from './systems/ExplosionSystem';
+import { runDamagePhase } from './systems/DamagePhaseSystem';
+import { checkWinLoss } from './systems/WinLossSystem';
 import { BattleLog } from './BattleLog';
 import { HingeJoint, processHingeInput } from './systems/HingeSystem';
 import { DecouplerState, processDecouplerInput, processDecouplerAttraction, processDecouplerDocking, buildDecouplerSides } from './systems/DecouplerSystem';
 import { DeterministicRng } from './DeterministicRng';
+import { ConnectionGraph } from './systems/ConnectionGraph';
+import { CameraSystem } from './systems/CameraSystem';
 
 export interface ShipState {
   bodyHandle: number;
@@ -36,6 +37,7 @@ export class BattleSimulation {
   eventQueue: RAPIER.EventQueue;
   ships: ShipState[] = [];
   colliderToComponent = new Map<number, ComponentInstance>();
+  colliderToShip = new Map<number, ShipState>();
   projectiles: Projectile[] = [];
   private input: InputManager;
   tickCount = 0;
@@ -47,8 +49,11 @@ export class BattleSimulation {
   hingeJoints: HingeJoint[] = [];
   decouplers: DecouplerState[] = [];
   rng = new DeterministicRng();
-  /** Next collision group bit for same-ship filtering (bits 1-15) */
-  private nextShipGroupBit = 1;
+  /** Persistent connection graphs keyed by bodyHandle (for hinged ships, primary body handle) */
+  connectionGraphs = new Map<number, ConnectionGraph>();
+  camera = new CameraSystem();
+  /** When a ship's body is destroyed/gone, maps its bodyHandle → the bodyHandle that killed it */
+  killerChain = new Map<number, number>();
 
   constructor(input: InputManager) {
     this.input = input;
@@ -82,7 +87,7 @@ export class BattleSimulation {
   private spawnShip(blueprint: ShipBlueprint, offsetX: number, offsetY: number, isPlayer: boolean): ShipState {
     // Check if ship contains any hinge components
     const hingeComps = blueprint.components.filter(
-      c => c.type === ComponentType.Hinge90 || c.type === ComponentType.Hinge180
+      c => getComponentDef(c.type as ComponentType).colliderShape === 'circle'
     );
 
     if (hingeComps.length === 0) {
@@ -131,12 +136,14 @@ export class BattleSimulation {
         comp.hotkey,
         comp.hotkeys,
         comp.hotkeyPriority,
+        comp.enabledSides,
+        comp.hingeStartAngle,
       );
 
       components.push(instance);
       this.colliderToComponent.set(collider.handle, instance);
 
-      if (comp.type === ComponentType.Decoupler) {
+      if (getComponentDef(comp.type as ComponentType).config.kind === 'decoupler') {
         this.decouplers.push({
           compId: comp.id,
           bodyHandle: body.handle,
@@ -147,6 +154,16 @@ export class BattleSimulation {
 
     components.sort((a, b) => (a.hotkeyPriority ?? 0) - (b.hotkeyPriority ?? 0));
 
+    // Build connection graph from unlatched decoupler sides
+    const unlatchedSides = new Map<string, import('../types/components').Side[]>();
+    for (const dc of this.decouplers) {
+      if (!components.some(c => c.id === dc.compId)) continue;
+      const sides = dc.sides.filter(s => s.mode !== 'latched').map(s => s.side);
+      if (sides.length > 0) unlatchedSides.set(dc.compId, sides);
+    }
+    const graph = ConnectionGraph.fromComponents(components, unlatchedSides);
+    this.connectionGraphs.set(body.handle, graph);
+
     const ship: ShipState = {
       bodyHandle: body.handle,
       components,
@@ -155,6 +172,10 @@ export class BattleSimulation {
       prevAngle: 0,
       bodyInterp: new Map([[body.handle, { prevPos: { x: offsetX, y: offsetY }, prevAngle: 0 }]]),
     };
+
+    for (const comp of components) {
+      this.colliderToShip.set(comp.colliderHandle, ship);
+    }
 
     this.ships.push(ship);
     return ship;
@@ -252,12 +273,14 @@ export class BattleSimulation {
           comp.hotkey,
           comp.hotkeys,
           comp.hotkeyPriority,
+          comp.enabledSides,
+          comp.hingeStartAngle,
         );
 
         allComponents.push(instance);
         this.colliderToComponent.set(collider.handle, instance);
 
-        if (comp.type === ComponentType.Decoupler) {
+        if (getComponentDef(comp.type as ComponentType).config.kind === 'decoupler') {
           this.decouplers.push({
             compId: comp.id,
             bodyHandle: body.handle,
@@ -269,157 +292,293 @@ export class BattleSimulation {
       sectionBodies.push({ body, comps: section.comps, centroidX: secCx, centroidY: secCy });
     }
 
-    // Create joints for each hinge component
-    for (const hingeComp of hingeComps) {
-      const neighbors = blueprint.adjacency[hingeComp.id] ?? [];
-      const adjacentSections = new Set<number>();
-      const neighborSectionMap = new Map<number, typeof blueprint.components[0]>();
+    // ===== HINGE CHAIN PROCESSING =====
+    // Tracks intermediate bodies created for multi-hinge chains
+    const allIntermediateBodies: RAPIER.RigidBody[] = [];
 
-      for (const nid of neighbors) {
-        for (let si = 0; si < sectionBodies.length; si++) {
-          if (sectionBodies[si].comps.some(c => c.id === nid)) {
-            adjacentSections.add(si);
-            neighborSectionMap.set(si, compById.get(nid)!);
+    // Build hinge-to-hinge adjacency
+    const hingeAdj = new Map<string, string[]>();
+    for (const hc of hingeComps) {
+      const neighbors: string[] = [];
+      for (const nid of blueprint.adjacency[hc.id] ?? []) {
+        if (hingeIds.has(nid)) neighbors.push(nid);
+      }
+      hingeAdj.set(hc.id, neighbors);
+    }
+
+    // Find connected components (chains) among hinges
+    const chainVisited = new Set<string>();
+    const hingeChainGroups: string[][] = [];
+    for (const hc of hingeComps) {
+      if (chainVisited.has(hc.id)) continue;
+      const chain: string[] = [];
+      const q = [hc.id];
+      chainVisited.add(hc.id);
+      while (q.length > 0) {
+        const id = q.shift()!;
+        chain.push(id);
+        for (const nid of hingeAdj.get(id) ?? []) {
+          if (!chainVisited.has(nid)) {
+            chainVisited.add(nid);
+            q.push(nid);
           }
         }
       }
+      hingeChainGroups.push(chain);
+    }
 
-      const sectionIndices = [...adjacentSections];
-      if (sectionIndices.length < 2) {
-        // Hinge only touches one section — attach as a regular collider
-        const si = sectionIndices[0] ?? 0;
-        const sec = sectionBodies[si];
-        const body = sec.body;
-        const def = getComponentDef(hingeComp.type as ComponentType);
-        const localX = (hingeComp.gridX - sec.centroidX) * TILE_SIZE;
-        const localY = (hingeComp.gridY - sec.centroidY) * TILE_SIZE;
-        const colliderDesc = RAPIER.ColliderDesc.ball(TILE_SIZE / 2)
-          .setTranslation(localX, localY)
-          .setDensity(def.mass)
-          .setFriction(0)
-          .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
-        const collider = this.world.createCollider(colliderDesc, body);
-        const instance = createComponentInstance(
-          hingeComp.id, hingeComp.type as ComponentType,
-          hingeComp.gridX, hingeComp.gridY, hingeComp.rotation,
-          collider.handle, body.handle, owner, hingeComp.hotkey,
-        );
-        allComponents.push(instance);
-        this.colliderToComponent.set(collider.handle, instance);
+    // Map component id → section index
+    const compToSection = new Map<string, number>();
+    for (let si = 0; si < sectionBodies.length; si++) {
+      for (const c of sectionBodies[si].comps) compToSection.set(c.id, si);
+    }
+
+    // Helper: attach a hinge as a ball collider on a body
+    const attachHingeCollider = (hc: typeof hingeComps[0], body: RAPIER.RigidBody, cxGrid: number, cyGrid: number) => {
+      const def = getComponentDef(hc.type as ComponentType);
+      const lx = (hc.gridX - cxGrid) * TILE_SIZE;
+      const ly = (hc.gridY - cyGrid) * TILE_SIZE;
+      const cd = RAPIER.ColliderDesc.ball(TILE_SIZE / 2)
+        .setTranslation(lx, ly).setDensity(def.mass).setFriction(0)
+        .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+      const col = this.world.createCollider(cd, body);
+      const inst = createComponentInstance(
+        hc.id, hc.type as ComponentType, hc.gridX, hc.gridY, hc.rotation,
+        col.handle, body.handle, owner, hc.hotkey, hc.hotkeys,
+        undefined, hc.enabledSides, hc.hingeStartAngle,
+      );
+      allComponents.push(inst);
+      this.colliderToComponent.set(col.handle, inst);
+    };
+
+    // Coordinate helpers
+    const localToWorld = (body: RAPIER.RigidBody, lx: number, ly: number) => {
+      const p = body.translation(); const a = body.rotation();
+      return { x: p.x + lx * Math.cos(a) - ly * Math.sin(a), y: p.y + lx * Math.sin(a) + ly * Math.cos(a) };
+    };
+    const worldToLocal = (body: RAPIER.RigidBody, wx: number, wy: number) => {
+      const p = body.translation(); const a = -body.rotation();
+      const dx = wx - p.x, dy = wy - p.y;
+      return { x: dx * Math.cos(a) - dy * Math.sin(a), y: dx * Math.sin(a) + dy * Math.cos(a) };
+    };
+    const rotateBodyAround = (body: RAPIER.RigidBody, px: number, py: number, angle: number) => {
+      const pos = body.translation();
+      const dx = pos.x - px, dy = pos.y - py;
+      const c = Math.cos(angle), s = Math.sin(angle);
+      body.setTranslation({ x: px + dx * c - dy * s, y: py + dx * s + dy * c }, true);
+      body.setRotation(body.rotation() + angle, true);
+    };
+    const getStartAngle = (hc: typeof hingeComps[0]) => {
+      const step = hc.hingeStartAngle ?? 0;
+      const hDef = getComponentDef(hc.type as ComponentType);
+      if (hDef.config.kind === 'hinge') {
+        const steps = hDef.config.startAngleSteps;
+        if (steps === 2) return [0, Math.PI / 2][step % 2];
+        return [0, Math.PI / 2, -Math.PI / 2][step % 3];
+      }
+      return 0;
+    };
+
+    // Process each chain
+    for (const chain of hingeChainGroups) {
+      // Find section neighbors for each hinge in the chain
+      const hingeSectionAdj = new Map<string, number[]>();
+      for (const hid of chain) {
+        const secs: number[] = [];
+        for (const nid of blueprint.adjacency[hid] ?? []) {
+          const si = compToSection.get(nid);
+          if (si !== undefined && !secs.includes(si)) secs.push(si);
+        }
+        hingeSectionAdj.set(hid, secs);
+      }
+
+      // Collect section endpoints
+      const endpoints: Array<{ hingeId: string; si: number }> = [];
+      for (const hid of chain) {
+        for (const si of hingeSectionAdj.get(hid) ?? []) {
+          endpoints.push({ hingeId: hid, si });
+        }
+      }
+      const uniqueSecs = new Set(endpoints.map(e => e.si));
+
+      if (uniqueSecs.size < 2) {
+        // Not bridging two sections — attach all as colliders on the nearest section
+        const fallbackSi = endpoints[0]?.si ?? 0;
+        const sec = sectionBodies[fallbackSi];
+        for (const hid of chain) {
+          attachHingeCollider(compById.get(hid)!, sec.body, sec.centroidX, sec.centroidY);
+        }
         continue;
       }
 
-      const secA = sectionBodies[sectionIndices[0]];
-      const secB = sectionBodies[sectionIndices[1]];
-      const bodyA = secA.body;
-      const bodyB = secB.body;
+      // Pick two section endpoints
+      const secAIdx = endpoints[0].si;
+      const secBIdx = endpoints.find(e => e.si !== secAIdx)!.si;
+      const startHingeId = endpoints.find(e => e.si === secAIdx)!.hingeId;
 
-      // Anchor relative to each section's own centroid
-      const anchorAX = (hingeComp.gridX - secA.centroidX) * TILE_SIZE;
-      const anchorAY = (hingeComp.gridY - secA.centroidY) * TILE_SIZE;
-      const anchorBX = (hingeComp.gridX - secB.centroidX) * TILE_SIZE;
-      const anchorBY = (hingeComp.gridY - secB.centroidY) * TILE_SIZE;
+      // Order hinges from section A → section B by traversing hinge adjacency
+      const ordered: string[] = [];
+      const oVisited = new Set<string>([startHingeId]);
+      const oq = [startHingeId];
+      while (oq.length > 0) {
+        const hid = oq.shift()!;
+        ordered.push(hid);
+        for (const nid of hingeAdj.get(hid) ?? []) {
+          if (!oVisited.has(nid)) { oVisited.add(nid); oq.push(nid); }
+        }
+      }
 
-      const maxAngle = hingeComp.type === ComponentType.Hinge90
-        ? Math.PI / 2
-        : Math.PI;
+      const N = ordered.length;
+      const secA = sectionBodies[secAIdx];
+      const secB = sectionBodies[secBIdx];
 
-      // Compute hinge starting angle (matches getHingeStartAngleRad in ComponentRenderer)
-      // 90° hinge: step 0 = East (0), step 1 = South (π/2)
-      // 180° hinge: step 0 = East (0), step 1 = South (π/2), step 2 = North (-π/2)
-      const hingeStep = hingeComp.hingeStartAngle ?? 0;
-      let startAngle = 0;
-      if (hingeComp.type === ComponentType.Hinge90) {
-        startAngle = [0, Math.PI / 2][hingeStep % 2];
+      if (N === 1) {
+        // === Single hinge — same as previous behavior ===
+        const hc = compById.get(ordered[0])!;
+        const bodyA = secA.body;
+        const bodyB = secB.body;
+        const anchorAX = (hc.gridX - secA.centroidX) * TILE_SIZE;
+        const anchorAY = (hc.gridY - secA.centroidY) * TILE_SIZE;
+        const anchorBX = (hc.gridX - secB.centroidX) * TILE_SIZE;
+        const anchorBY = (hc.gridY - secB.centroidY) * TILE_SIZE;
+        const hcDef = getComponentDef(hc.type as ComponentType);
+        const maxAngle = hcDef.config.kind === 'hinge' ? hcDef.config.maxAngle : Math.PI / 2;
+        const startAngle = getStartAngle(hc);
+
+        if (startAngle !== 0) {
+          const hw = localToWorld(bodyA, anchorAX, anchorAY);
+          rotateBodyAround(bodyB, hw.x, hw.y, startAngle);
+        }
+
+        const cosB = Math.cos(-startAngle);
+        const sinB = Math.sin(-startAngle);
+        const rotAnchorBX = anchorBX * cosB - anchorBY * sinB;
+        const rotAnchorBY = anchorBX * sinB + anchorBY * cosB;
+
+        const jp = RAPIER.JointData.revolute({ x: anchorAX, y: anchorAY }, { x: rotAnchorBX, y: rotAnchorBY });
+        const joint = this.world.createImpulseJoint(jp, bodyA, bodyB, true);
+        (joint as RAPIER.RevoluteImpulseJoint).setLimits(-maxAngle / 2, maxAngle / 2);
+
+        attachHingeCollider(hc, bodyA, secA.centroidX, secA.centroidY);
+
+        this.hingeJoints.push({
+          jointHandle: joint.handle, hingeCompId: hc.id,
+          hotkeyLeft: hc.hotkey, hotkeyRight: hc.hotkeys?.[0],
+          bodyAHandle: bodyA.handle, bodyBHandle: bodyB.handle,
+          maxAngle, setpoint: startAngle,
+        });
       } else {
-        startAngle = [0, Math.PI / 2, -Math.PI / 2][hingeStep % 3];
+        // === N ≥ 2: create N-1 intermediate bodies forming an articulated chain ===
+        // Topology: SecA ←(H0)→ mid[0] ←(H1)→ mid[1] ... mid[N-2] ←(H[N-1])→ SecB
+        // H[i] collider lives on the left body; intermediate[k] is at hinge[k+1]'s position.
+        const intermediates: RAPIER.RigidBody[] = [];
+        for (let k = 0; k < N - 1; k++) {
+          const hc = compById.get(ordered[k + 1])!;
+          const bx = offsetX + (hc.gridX - gcx) * TILE_SIZE;
+          const by = offsetY + (hc.gridY - gcy) * TILE_SIZE;
+          const bd = RAPIER.RigidBodyDesc.dynamic()
+            .setTranslation(bx, by).setAngularDamping(0).setLinearDamping(0).setCanSleep(false);
+          intermediates.push(this.world.createRigidBody(bd));
+        }
+        allIntermediateBodies.push(...intermediates);
+
+        // Apply start angles cumulatively left-to-right:
+        // For hinge[i], rotate all bodies to its right around the hinge's world position.
+        for (let i = 0; i < N; i++) {
+          const hc = compById.get(ordered[i])!;
+          const sa = getStartAngle(hc);
+          if (sa === 0) continue;
+
+          const leftBody = i === 0 ? secA.body : intermediates[i - 1];
+          // Anchor of hinge[i] on its left body in local coords
+          const anchorLocal = i === 0
+            ? { x: (hc.gridX - secA.centroidX) * TILE_SIZE, y: (hc.gridY - secA.centroidY) * TILE_SIZE }
+            : { x: 0, y: 0 }; // intermediate[i-1] is centered at hinge[i]'s position
+          const hw = localToWorld(leftBody, anchorLocal.x, anchorLocal.y);
+
+          // Rotate all bodies to the right of this hinge
+          for (let j = i; j < N - 1; j++) rotateBodyAround(intermediates[j], hw.x, hw.y, sa);
+          rotateBodyAround(secB.body, hw.x, hw.y, sa);
+        }
+
+        // Create revolute joints and attach hinge colliders
+        for (let i = 0; i < N; i++) {
+          const hc = compById.get(ordered[i])!;
+          const hcDef = getComponentDef(hc.type as ComponentType);
+        const maxAngle = hcDef.config.kind === 'hinge' ? hcDef.config.maxAngle : Math.PI / 2;
+          const sa = getStartAngle(hc);
+
+          const leftBody = i === 0 ? secA.body : intermediates[i - 1];
+          const rightBody = i === N - 1 ? secB.body : intermediates[i];
+
+          // Anchor on left body (body-local)
+          const anchorLeft = i === 0
+            ? { x: (hc.gridX - secA.centroidX) * TILE_SIZE, y: (hc.gridY - secA.centroidY) * TILE_SIZE }
+            : { x: 0, y: 0 };
+
+          // Anchor on right body: transform hinge world pos into right body's local frame
+          const hw = localToWorld(leftBody, anchorLeft.x, anchorLeft.y);
+          const anchorRight = worldToLocal(rightBody, hw.x, hw.y);
+
+          const jp = RAPIER.JointData.revolute(anchorLeft, anchorRight);
+          const joint = this.world.createImpulseJoint(jp, leftBody, rightBody, true);
+          (joint as RAPIER.RevoluteImpulseJoint).setLimits(-maxAngle / 2, maxAngle / 2);
+
+          // Hinge collider on the left body
+          if (i === 0) {
+            attachHingeCollider(hc, leftBody, secA.centroidX, secA.centroidY);
+          } else {
+            // intermediate[i-1] is centered at hinge[i]'s grid position
+            attachHingeCollider(hc, leftBody, hc.gridX, hc.gridY);
+          }
+
+          this.hingeJoints.push({
+            jointHandle: joint.handle, hingeCompId: hc.id,
+            hotkeyLeft: hc.hotkey, hotkeyRight: hc.hotkeys?.[0],
+            bodyAHandle: leftBody.handle, bodyBHandle: rightBody.handle,
+            maxAngle, setpoint: sa,
+          });
+        }
       }
-
-      // Rotate body B by start angle around the hinge point
-      if (startAngle !== 0) {
-        const hingeWorldX = bodyA.translation().x + anchorAX * Math.cos(bodyA.rotation()) - anchorAY * Math.sin(bodyA.rotation());
-        const hingeWorldY = bodyA.translation().y + anchorAX * Math.sin(bodyA.rotation()) + anchorAY * Math.cos(bodyA.rotation());
-        const bPos = bodyB.translation();
-        const dx = bPos.x - hingeWorldX;
-        const dy = bPos.y - hingeWorldY;
-        const cosA = Math.cos(startAngle);
-        const sinA = Math.sin(startAngle);
-        bodyB.setTranslation({ x: hingeWorldX + dx * cosA - dy * sinA, y: hingeWorldY + dx * sinA + dy * cosA }, true);
-        bodyB.setRotation(bodyB.rotation() + startAngle, true);
-      }
-
-      // Anchor B in body-local space needs to account for B's rotation offset
-      const cosB = Math.cos(-startAngle);
-      const sinB = Math.sin(-startAngle);
-      const rotAnchorBX = anchorBX * cosB - anchorBY * sinB;
-      const rotAnchorBY = anchorBX * sinB + anchorBY * cosB;
-
-      const jointParams = RAPIER.JointData.revolute(
-        { x: anchorAX, y: anchorAY },
-        { x: rotAnchorBX, y: rotAnchorBY },
-      );
-      const joint = this.world.createImpulseJoint(jointParams, bodyA, bodyB, true);
-
-      const revolute = joint as RAPIER.RevoluteImpulseJoint;
-      revolute.setLimits(-maxAngle / 2, maxAngle / 2);
-
-      // Hinge collider attached to body A — circular so corners don't clip during rotation
-      const def = getComponentDef(hingeComp.type as ComponentType);
-      const colliderDesc = RAPIER.ColliderDesc.ball(TILE_SIZE / 2)
-        .setTranslation(anchorAX, anchorAY)
-        .setDensity(def.mass)
-        .setFriction(0)
-        .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
-      const collider = this.world.createCollider(colliderDesc, bodyA);
-      const instance = createComponentInstance(
-        hingeComp.id, hingeComp.type as ComponentType,
-        hingeComp.gridX, hingeComp.gridY, hingeComp.rotation,
-        collider.handle, bodyA.handle, owner, hingeComp.hotkey,
-        hingeComp.hotkeys,
-      );
-      allComponents.push(instance);
-      this.colliderToComponent.set(collider.handle, instance);
-
-      this.hingeJoints.push({
-        jointHandle: joint.handle,
-        hingeCompId: hingeComp.id,
-        hotkeyLeft: hingeComp.hotkey,
-        hotkeyRight: hingeComp.hotkeys?.[0],
-        bodyAHandle: bodyA.handle,
-        bodyBHandle: bodyB.handle,
-        maxAngle,
-        lockedAngle: startAngle,
-      });
-    }
-
-    // Prevent ALL same-ship collisions: assign a unique bit so components
-    // on different bodies of this ship can't collide with each other
-    const shipBit = 1 << this.nextShipGroupBit;
-    this.nextShipGroupBit = (this.nextShipGroupBit % 15) + 1; // cycle bits 1-15
-    const shipMembership = shipBit;
-    const shipFilter = 0xFFFF & ~shipBit;
-    for (const comp of allComponents) {
-      const coll = this.world.getCollider(comp.colliderHandle);
-      if (coll) coll.setCollisionGroups((shipMembership << 16) | shipFilter);
     }
 
     allComponents.sort((a, b) => (a.hotkeyPriority ?? 0) - (b.hotkeyPriority ?? 0));
+
+    // Build connection graph spanning all bodies (hinged ship)
+    const hingedUnlatchedSides = new Map<string, import('../types/components').Side[]>();
+    for (const dc of this.decouplers) {
+      if (!allComponents.some(c => c.id === dc.compId)) continue;
+      const sides = dc.sides.filter(s => s.mode !== 'latched').map(s => s.side);
+      if (sides.length > 0) hingedUnlatchedSides.set(dc.compId, sides);
+    }
+    const hingedGraph = ConnectionGraph.fromComponents(allComponents, hingedUnlatchedSides);
 
     const primaryBody = sectionBodies[0]?.body;
     const bodyInterpMap = new Map<number, { prevPos: { x: number; y: number }; prevAngle: number }>();
     for (const sec of sectionBodies) {
       const pos = sec.body.translation();
-      bodyInterpMap.set(sec.body.handle, { prevPos: { x: pos.x, y: pos.y }, prevAngle: 0 });
+      bodyInterpMap.set(sec.body.handle, { prevPos: { x: pos.x, y: pos.y }, prevAngle: sec.body.rotation() });
+    }
+    for (const ib of allIntermediateBodies) {
+      const pos = ib.translation();
+      bodyInterpMap.set(ib.handle, { prevPos: { x: pos.x, y: pos.y }, prevAngle: ib.rotation() });
     }
 
+    const primaryHandle = primaryBody?.handle ?? 0;
+    this.connectionGraphs.set(primaryHandle, hingedGraph);
+
     const ship: ShipState = {
-      bodyHandle: primaryBody?.handle ?? 0,
+      bodyHandle: primaryHandle,
       components: allComponents,
       isPlayer,
       prevPosition: { x: offsetX, y: offsetY },
       prevAngle: 0,
       bodyInterp: bodyInterpMap,
     };
+
+    for (const comp of allComponents) {
+      this.colliderToShip.set(comp.colliderHandle, ship);
+    }
 
     this.ships.push(ship);
     return ship;
@@ -444,6 +603,9 @@ export class BattleSimulation {
       return;
     }
 
+    // Save camera state before physics
+    this.camera.savePrevState(this);
+
     // Save previous state for interpolation
     for (const ship of this.ships) {
       const body = this.world.getRigidBody(ship.bodyHandle);
@@ -451,10 +613,6 @@ export class BattleSimulation {
       const pos = body.translation();
       ship.prevPosition = { x: pos.x, y: pos.y };
       ship.prevAngle = body.rotation();
-      if (ship.isPlayer) {
-        const comPos = this.getPlayerBodyPosition();
-        if (comPos) ship.prevCom = comPos;
-      }
 
       // Save per-body interpolation state for multi-body ships
       if (ship.bodyInterp) {
@@ -553,26 +711,20 @@ export class BattleSimulation {
       else if (ship.aiType === 'shooter') updateShooterAI(this, ship, i);
     }
 
-    // === ENGINE THRUST: apply thrust for all active engines ===
+    // === ACTIVE COMPONENT TICK: engines, etc. ===
     for (const ship of this.ships) {
       for (const comp of ship.components) {
         if (!comp.isActive) continue;
-
-        if (comp.type === ComponentType.EngineSmall ||
-            comp.type === ComponentType.EngineMedium ||
-            comp.type === ComponentType.EngineLarge) {
-          const body = this.world.getRigidBody(comp.bodyHandle);
-          if (!body) continue;
-          this.applyEngineThrust(body, comp);
-        }
+        const def = getComponentDef(comp.type);
+        def.onTickActive?.(this, comp, ship);
       }
     }
 
     // Player blaster fire (reads comp.isActive)
     processBlasterFire(this, this.projectiles);
 
-    // Hinge motor control (still uses heldKeys — two opposing actions)
-    processHingeInput(this, this.hingeJoints, heldKeys);
+    // Hinge motor control (tap = 1° nudge, hold = HINGE_SETPOINT_STEP per tick)
+    processHingeInput(this, this.hingeJoints, heldKeys, pressedKeys);
 
     // Decoupler input (uses pressedKeys for mode toggling)
     if (gameActive) {
@@ -585,8 +737,66 @@ export class BattleSimulation {
     // Decoupler docking (low-speed contact merges bodies)
     processDecouplerDocking(this, this.decouplers);
 
+    // --- Pre-step: measure KE of hinged ships for energy clamping ---
+    const preStepKE = new Map<ShipState, number>();
+    const hingedShipSet = new Set<ShipState>();
+    if (this.hingeJoints.length > 0) {
+      const bodyToShip = new Map<number, ShipState>();
+      for (const ship of this.ships) {
+        for (const c of ship.components) {
+          if (c.health > 0) bodyToShip.set(c.bodyHandle, ship);
+        }
+      }
+      for (const hj of this.hingeJoints) {
+        const ship = bodyToShip.get(hj.bodyAHandle) ?? bodyToShip.get(hj.bodyBHandle);
+        if (ship) hingedShipSet.add(ship);
+      }
+      for (const ship of hingedShipSet) {
+        const handles = new Set<number>();
+        for (const c of ship.components) if (c.health > 0) handles.add(c.bodyHandle);
+        let ke = 0;
+        for (const h of handles) {
+          const b = this.world.getRigidBody(h);
+          if (!b) continue;
+          const m = b.mass();
+          const lv = b.linvel();
+          const av = b.angvel();
+          // Use mass-weighted metric for both linear and angular velocity
+          ke += 0.5 * m * (lv.x * lv.x + lv.y * lv.y) + 0.5 * m * av * av;
+        }
+        preStepKE.set(ship, ke);
+      }
+    }
+
     // Step physics
     this.world.step(this.eventQueue);
+
+    // --- Post-step: clamp KE of hinged ships to prevent energy feedback ---
+    for (const ship of hingedShipSet) {
+      const handles = new Set<number>();
+      for (const c of ship.components) if (c.health > 0) handles.add(c.bodyHandle);
+      let postKE = 0;
+      for (const h of handles) {
+        const b = this.world.getRigidBody(h);
+        if (!b) continue;
+        const m = b.mass();
+        const lv = b.linvel();
+        const av = b.angvel();
+        postKE += 0.5 * m * (lv.x * lv.x + lv.y * lv.y) + 0.5 * m * av * av;
+      }
+      const budget = preStepKE.get(ship) ?? 0;
+      const epsilon = 0.01;
+      if (budget > 0 && postKE > budget * (1 + epsilon)) {
+        const scale = Math.sqrt(budget / postKE);
+        for (const h of handles) {
+          const b = this.world.getRigidBody(h);
+          if (!b) continue;
+          const lv = b.linvel();
+          b.setLinvel({ x: lv.x * scale, y: lv.y * scale }, true);
+          b.setAngvel(b.angvel() * scale, true);
+        }
+      }
+    }
 
     // Snapshot health before any damage to detect auto-detonations
     const prevHealth = new Map<string, number>();
@@ -599,21 +809,15 @@ export class BattleSimulation {
     // Update projectiles (movement + collision)
     updateProjectiles(this, this.projectiles, _dt);
 
-    // Post-step: damage, destruction, win/loss
-    processCollisionDamage(this);
-
-    // Exhaust damage (reads comp.isActive)
-    processExhaustDamage(this);
-
-    // Player-triggered explosive detonation (1-second fuse)
+    // Player-triggered press actions (explosive fuse, etc.)
     if (gameActive) {
       for (const ship of this.ships) {
         for (const comp of ship.components) {
-          if (comp.type === ComponentType.Explosive && comp.health > 0
-            && comp.owner === 'player' && comp.hotkey && pressedKeys.has(comp.hotkey)) {
-            if (comp.detonationCountdown === undefined) {
-              comp.detonationCountdown = 60;
-            }
+          if (comp.health <= 0 || comp.owner !== 'player') continue;
+          const def = getComponentDef(comp.type);
+          if (def.activationMode !== 'press' || !def.onHotkeyPressed) continue;
+          if (comp.hotkey && pressedKeys.has(comp.hotkey)) {
+            def.onHotkeyPressed(this, comp, ship, comp.hotkey);
           }
         }
       }
@@ -632,68 +836,19 @@ export class BattleSimulation {
       }
     }
 
-    // Auto-detonate explosives destroyed this tick
-    checkAutoDetonate(this, prevHealth);
+    // ALL post-physics damage in one call
+    runDamagePhase(this, prevHealth, _dt);
 
-    // Snapshot component counts before destruction for logging
-    const compCountsBefore = new Map<number, number>();
-    for (const ship of this.ships) {
-      compCountsBefore.set(ship.bodyHandle, ship.components.filter(c => c.health > 0).length);
-    }
-
-    processDestruction(this);
-
-    // Log destruction events
-    for (const ship of this.ships) {
-      const before = compCountsBefore.get(ship.bodyHandle) ?? 0;
-      const after = ship.components.filter(c => c.health > 0).length;
-      const destroyed = before - after;
-      if (destroyed > 0) {
-        this.battleLog.logEvent(this.tickCount, 'destruction', `${destroyed} component(s) destroyed`);
-      }
-    }
-
-    processExplosions(this, _dt);
+    // Win/loss
     if (gameActive) {
       checkWinLoss(this);
     }
 
+    // Advance camera transition
+    this.camera.tickTransition();
+
     this.battleLog.endTick = this.tickCount;
     this.input.endFrame();
-  }
-
-  private applyEngineThrust(body: RAPIER.RigidBody, comp: ComponentInstance) {
-    const size = comp.type === ComponentType.EngineSmall ? 'small'
-      : comp.type === ComponentType.EngineMedium ? 'medium' : 'large';
-    const thrust = ENGINE_THRUST[size];
-
-    const def = getComponentDef(comp.type);
-    const functionalSide = def.functionalSide ?? Side.South;
-    const thrustSide = rotateSide(functionalSide, comp.rotation);
-
-    let dx = 0, dy = 0;
-    switch (thrustSide) {
-      case Side.North: dx = 0; dy = 1; break;
-      case Side.South: dx = 0; dy = -1; break;
-      case Side.East: dx = -1; dy = 0; break;
-      case Side.West: dx = 1; dy = 0; break;
-    }
-
-    const angle = body.rotation();
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    const fx = (dx * cos - dy * sin) * thrust;
-    const fy = (dx * sin + dy * cos) * thrust;
-
-    const collider = this.world.getCollider(comp.colliderHandle);
-    if (!collider) return;
-
-    const worldPos = collider.translation();
-    body.applyImpulseAtPoint(
-      { x: fx * FIXED_TIMESTEP, y: fy * FIXED_TIMESTEP },
-      { x: worldPos.x, y: worldPos.y },
-      true
-    );
   }
 
   getPlayerShip(): ShipState | undefined {
@@ -726,6 +881,11 @@ export class BattleSimulation {
 
     if (totalMass === 0) return null;
     return { x: comX / totalMass, y: comY / totalMass };
+  }
+
+  /** Get the connection graph for a ship (by its primary bodyHandle). */
+  getConnectionGraph(bodyHandle: number): ConnectionGraph | undefined {
+    return this.connectionGraphs.get(bodyHandle);
   }
 
   destroy() {
