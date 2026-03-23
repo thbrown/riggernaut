@@ -134,6 +134,13 @@ export class BattleRenderer {
   }
 
   private drawShip(ctx: CanvasRenderingContext2D, sim: BattleSimulation, ship: ShipState, alpha: number) {
+    // Build grid lookup from ALL living ship components (across all bodies)
+    const compByGrid = new Map<string, ComponentInstance>();
+    for (const c of ship.components) {
+      if (c.health > 0) compByGrid.set(`${c.gridX},${c.gridY}`, c);
+    }
+    const shipGraph = sim.getConnectionGraph(ship.bodyHandle);
+
     // Group living components by bodyHandle
     const bodyGroups = new Map<number, typeof ship.components>();
     for (const comp of ship.components) {
@@ -201,20 +208,42 @@ export class BattleRenderer {
       ctx.fillStyle = def.color;
       ctx.globalAlpha = 0.85;
 
+      const teamColor = ship.isPlayer ? '#88ccff' : '#ff6644';
+
       if (isCircle) {
         ctx.beginPath();
         ctx.arc(0, 0, halfSize - 1, 0, Math.PI * 2);
         ctx.fill();
-        ctx.strokeStyle = ship.isPlayer ? '#88ccff' : '#ff6644';
+        ctx.strokeStyle = teamColor;
         ctx.lineWidth = 1.5;
         ctx.stroke();
         ctx.strokeStyle = ship.isPlayer ? 'rgba(136,204,255,0.25)' : 'rgba(255,102,68,0.25)';
         ctx.strokeRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
       } else {
         ctx.fillRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
-        ctx.strokeStyle = ship.isPlayer ? '#88ccff' : '#ff6644';
+
+        // Selective borders: skip border on sides with active connected neighbors (visual merge)
+        ctx.strokeStyle = teamColor;
         ctx.lineWidth = 1.5;
-        ctx.strokeRect(-halfSize + 1, -halfSize + 1, halfSize * 2 - 2, halfSize * 2 - 2);
+        const b = halfSize - 1; // border inset
+        for (const side of ALL_SIDES) {
+          const worldSide = rotateSide(side, comp.rotation);
+          const off = sideOffset(worldSide);
+          const neighbor = compByGrid.get(`${comp.gridX + off.dx},${comp.gridY + off.dy}`);
+          const hasActiveNeighbor = neighbor && neighbor !== comp
+            && shipGraph?.hasActiveEdge(comp.id, neighbor.id);
+
+          if (!hasActiveNeighbor) {
+            ctx.beginPath();
+            switch (side) {
+              case Side.North: ctx.moveTo(-b, -b); ctx.lineTo(b, -b); break;
+              case Side.South: ctx.moveTo(-b, b); ctx.lineTo(b, b); break;
+              case Side.East:  ctx.moveTo(b, -b); ctx.lineTo(b, b); break;
+              case Side.West:  ctx.moveTo(-b, -b); ctx.lineTo(-b, b); break;
+            }
+            ctx.stroke();
+          }
+        }
       }
 
       ctx.globalAlpha = 1;
@@ -287,17 +316,13 @@ export class BattleRenderer {
       def.drawEffect?.(ctx, halfSize, comp, sim);
 
       // Disconnected edge glow — orange/amber line on any adjacent edge
-      // that has no active connection (severed decoupler OR non-attachable side like ram top)
-      const shipGraph = sim.getConnectionGraph(ship.bodyHandle);
+      // that has no active connection (severed, decoupled, non-attachable, or cross-body)
       if (shipGraph) {
         for (const side of ALL_SIDES) {
           const worldSide = rotateSide(side, comp.rotation);
           const off = sideOffset(worldSide);
-          const nx = comp.gridX + off.dx;
-          const ny = comp.gridY + off.dy;
-          // Look for neighbor in same body group (same physics body)
-          const neighbor = comps.find(c => c.gridX === nx && c.gridY === ny && c !== comp);
-          if (neighbor && !shipGraph.hasActiveEdge(comp.id, neighbor.id)) {
+          const neighbor = compByGrid.get(`${comp.gridX + off.dx},${comp.gridY + off.dy}`);
+          if (neighbor && neighbor !== comp && !shipGraph.hasActiveEdge(comp.id, neighbor.id)) {
             drawDisconnectedEdgeGlow(ctx, halfSize, side);
           }
         }

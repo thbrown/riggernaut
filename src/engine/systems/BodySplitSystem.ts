@@ -2,7 +2,7 @@ import RAPIER from '@dimforge/rapier2d-compat';
 import { BattleSimulation, ShipState } from '../BattleSimulation';
 import { getComponentDef } from '../../game/components';
 import { ComponentInstance } from '../entities/ComponentInstance';
-import { TILE_SIZE } from '../../config/constants';
+import { TILE_SIZE, COLLIDER_MARGIN } from '../../config/constants';
 
 /** Split orphaned components off into new rigid bodies (space junk).
  *  Creates a new body for each connected cluster of orphans with momentum conservation.
@@ -100,7 +100,7 @@ export function splitOrphansToNewBodies(
       sim.world.removeCollider(oldCollider, true);
 
       // Create new collider on new body — normal collision group
-      const colliderDesc = RAPIER.ColliderDesc.cuboid(TILE_SIZE / 2, TILE_SIZE / 2)
+      const colliderDesc = RAPIER.ColliderDesc.cuboid(TILE_SIZE / 2 - COLLIDER_MARGIN, TILE_SIZE / 2 - COLLIDER_MARGIN)
         .setTranslation(localX, localY)
         .setDensity(getComponentDef(comp.type).mass)
         .setFriction(0)

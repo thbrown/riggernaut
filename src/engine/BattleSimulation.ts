@@ -4,7 +4,7 @@ import { ComponentType } from '../types/components';
 import { getComponentDef } from '../game/components';
 import { ComponentInstance, createComponentInstance } from './entities/ComponentInstance';
 import { InputManager } from './InputManager';
-import { TILE_SIZE, STARTING_DIST, BATTLE_COUNTDOWN_SECONDS } from '../config/constants';
+import { TILE_SIZE, STARTING_DIST, BATTLE_COUNTDOWN_SECONDS, COLLIDER_MARGIN } from '../config/constants';
 import { detectAndSplitDisconnected } from './systems/DestructionSystem';
 import { updateRammerAI, updateShooterAI, AIType } from './systems/AISystem';
 import { Projectile } from './entities/Projectile';
@@ -119,7 +119,7 @@ export class BattleSimulation {
       const localX = (comp.gridX - cx) * TILE_SIZE;
       const localY = (comp.gridY - cy) * TILE_SIZE;
 
-      const colliderDesc = RAPIER.ColliderDesc.cuboid(TILE_SIZE / 2, TILE_SIZE / 2)
+      const colliderDesc = RAPIER.ColliderDesc.cuboid(TILE_SIZE / 2 - COLLIDER_MARGIN, TILE_SIZE / 2 - COLLIDER_MARGIN)
         .setTranslation(localX, localY)
         .setDensity(def.mass)
         .setFriction(0)
@@ -256,7 +256,7 @@ export class BattleSimulation {
         const localX = (comp.gridX - secCx) * TILE_SIZE;
         const localY = (comp.gridY - secCy) * TILE_SIZE;
 
-        const colliderDesc = RAPIER.ColliderDesc.cuboid(TILE_SIZE / 2, TILE_SIZE / 2)
+        const colliderDesc = RAPIER.ColliderDesc.cuboid(TILE_SIZE / 2 - COLLIDER_MARGIN, TILE_SIZE / 2 - COLLIDER_MARGIN)
           .setTranslation(localX, localY)
           .setDensity(def.mass)
           .setFriction(0)

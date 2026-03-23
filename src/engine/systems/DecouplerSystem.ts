@@ -7,12 +7,13 @@ import {
   DECOUPLER_DETACH_IMPULSE, FIXED_TIMESTEP,
   DECOUPLER_ATTRACTION_RADIUS,
   DECOUPLER_ATTRACTION_FORCE, DECOUPLER_DOCK_MAX_SPEED, TILE_SIZE,
-  ATTRACTOR_ANGULAR_STIFFNESS, ATTRACTOR_ANGULAR_DAMPING,
+  ATTRACTOR_ANGULAR_STIFFNESS, ATTRACTOR_ANGULAR_DAMPING, COLLIDER_MARGIN,
 } from '../../config/constants';
 import { getComponentDef } from '../../game/components';
 import { sideOffset, resolveSegmentOwner } from './ConnectivitySystem';
 import { splitOrphansToNewBodies } from './BodySplitSystem';
-import { ConnectionGraph, canAttachRuntime } from './ConnectionGraph';
+import { ConnectionGraph } from './ConnectionGraph';
+import { canAttachRuntime } from './ConnectivitySystem';
 
 export type DecouplerMode = 'latched' | 'unlatched' | 'attractor';
 
@@ -654,7 +655,7 @@ function mergeBodies(sim: BattleSimulation, survivor: ShipState, absorbed: ShipS
 
     sim.world.removeCollider(oldCollider, true);
 
-    const colliderDesc = RAPIER.ColliderDesc.cuboid(TILE_SIZE / 2, TILE_SIZE / 2)
+    const colliderDesc = RAPIER.ColliderDesc.cuboid(TILE_SIZE / 2 - COLLIDER_MARGIN, TILE_SIZE / 2 - COLLIDER_MARGIN)
       .setTranslation(localX, localY)
       .setDensity(getComponentDef(comp.type).mass)
       .setFriction(0)

@@ -91,3 +91,30 @@
 .build-grid__action-btn--remove:hover {
   background: #994444;
 }
+
+/* Edge toggle zones — clickable strips on tile edges for toggling attachment sides */
+.build-grid__edge-toggle {
+  cursor: pointer;
+  border-radius: 1px;
+  transition: background 0.15s, box-shadow 0.15s;
+}
+
+.build-grid__edge-toggle--enabled {
+  background: rgba(0, 255, 204, 0.25);
+  box-shadow: inset 0 0 3px rgba(0, 255, 204, 0.5);
+}
+
+.build-grid__edge-toggle--enabled:hover {
+  background: rgba(0, 255, 204, 0.5);
+  box-shadow: inset 0 0 6px rgba(0, 255, 204, 0.8);
+}
+
+.build-grid__edge-toggle--disabled {
+  background: rgba(255, 60, 60, 0.3);
+  box-shadow: inset 0 0 3px rgba(255, 60, 60, 0.5);
+}
+
+.build-grid__edge-toggle--disabled:hover {
+  background: rgba(255, 60, 60, 0.5);
+  box-shadow: inset 0 0 6px rgba(255, 60, 60, 0.8);
+}

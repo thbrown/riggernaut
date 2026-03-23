@@ -83,45 +83,32 @@ export function BuildPhase() {
     }));
   }, [components, updateComponents]);
 
-  const handleCycleSides = useCallback((id: string) => {
+  const handleToggleSide = useCallback((id: string, side: Side) => {
     updateComponents(components.map(c => {
       if (c.id !== id) return c;
       const def = getComponentDef(c.type as ComponentType);
       let baseSides: Side[];
       if (def.colliderShape === 'circle' && def.config.kind === 'hinge') {
         const step = c.hingeStartAngle ?? 0;
-        const movableSide = rotateSide(Side.East, step);
-        baseSides = [Side.West, movableSide];
+        baseSides = [Side.West, rotateSide(Side.East, step)];
       } else {
         baseSides = [...def.attachableSides];
       }
 
-      if (baseSides.length <= 1) return c; // Nothing to cycle
+      if (!baseSides.includes(side)) return c; // Can't toggle non-base sides
 
-      // Generate all non-empty subsets, starting with full set
-      const subsets: Side[][] = [];
-      const n = baseSides.length;
-      for (let mask = (1 << n) - 1; mask >= 1; mask--) {
-        const subset: Side[] = [];
-        for (let i = 0; i < n; i++) {
-          if (mask & (1 << i)) subset.push(baseSides[i]);
-        }
-        subsets.push(subset);
+      const currentEnabled = c.enabledSides ?? [...baseSides];
+      const isEnabled = currentEnabled.includes(side);
+
+      if (isEnabled) {
+        const newSides = currentEnabled.filter(s => s !== side);
+        if (newSides.length === 0) return c; // Can't disable all
+        return { ...c, enabledSides: newSides };
+      } else {
+        const newSides = [...currentEnabled, side];
+        // If all sides re-enabled, clear enabledSides (undefined = all enabled)
+        return { ...c, enabledSides: newSides.length === baseSides.length ? undefined : newSides };
       }
-
-      // Find current subset index
-      const currentEnabled = c.enabledSides ?? baseSides;
-      const currentIdx = subsets.findIndex(s =>
-        s.length === currentEnabled.length && s.every(side => currentEnabled.includes(side))
-      );
-      const nextIdx = (currentIdx + 1) % subsets.length;
-      const nextSubset = subsets[nextIdx];
-
-      // If next subset is full set, clear enabledSides (undefined = all enabled)
-      if (nextSubset.length === baseSides.length) {
-        return { ...c, enabledSides: undefined };
-      }
-      return { ...c, enabledSides: nextSubset };
     }));
   }, [components, updateComponents]);
 
@@ -184,7 +171,7 @@ export function BuildPhase() {
           onMoveComponent={handleMoveComponent}
           onRotateComponent={handleRotateComponent}
           onCycleHingeAngle={handleCycleHingeAngle}
-          onCycleSides={handleCycleSides}
+          onToggleSide={handleToggleSide}
         />
         <PhaseNav
           onBack={handleBack}

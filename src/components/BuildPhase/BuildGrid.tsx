@@ -1,11 +1,34 @@
 import { useCallback, useState, DragEvent } from 'react';
-import { ComponentType } from '../../types/components';
-import { PlacedComponent, GridPosition } from '../../types/grid';
+import { ComponentType, Side } from '../../types/components';
+import { PlacedComponent, GridPosition, rotateSide } from '../../types/grid';
 import { ComponentRenderer } from './ComponentRenderer';
 import { computeAttachment, isOccupied } from '../../game/grid-logic';
+import { getComponentDef } from '../../game/components';
 import './BuildGrid.css';
 
 const TILE_PX = 50;
+
+/** Map local side → CSS positioning for edge toggle zones */
+function edgeToggleStyle(side: Side): React.CSSProperties {
+  const thickness = 10;
+  const base: React.CSSProperties = { position: 'absolute', zIndex: 2 };
+  switch (side) {
+    case Side.North: return { ...base, top: 0, left: thickness, right: thickness, height: thickness };
+    case Side.South: return { ...base, bottom: 0, left: thickness, right: thickness, height: thickness };
+    case Side.East:  return { ...base, right: 0, top: thickness, bottom: thickness, width: thickness };
+    case Side.West:  return { ...base, left: 0, top: thickness, bottom: thickness, width: thickness };
+  }
+}
+
+/** Get base attachable sides for a component (unrotated) */
+function getBaseSides(comp: PlacedComponent): Side[] {
+  const def = getComponentDef(comp.type as ComponentType);
+  if (def.colliderShape === 'circle' && def.config.kind === 'hinge') {
+    const step = comp.hingeStartAngle ?? 0;
+    return [Side.West, rotateSide(Side.East, step)];
+  }
+  return [...def.attachableSides];
+}
 
 interface BuildGridProps {
   width: number;
@@ -18,13 +41,13 @@ interface BuildGridProps {
   onMoveComponent: (id: string, pos: GridPosition) => void;
   onRotateComponent: (id: string) => void;
   onCycleHingeAngle?: (id: string) => void;
-  onCycleSides?: (id: string) => void;
+  onToggleSide?: (id: string, side: Side) => void;
 }
 
 export function BuildGrid({
   width, height, components, activeComponentType,
   onPlaceComponent, onRemoveComponent, onMoveComponent, onRotateComponent,
-  onCycleHingeAngle, onCycleSides,
+  onCycleHingeAngle, onToggleSide,
 }: BuildGridProps) {
   const [dragOverPos, setDragOverPos] = useState<GridPosition | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -136,6 +159,25 @@ export function BuildGrid({
                       hingeStartAngle={comp.hingeStartAngle}
                       enabledSides={comp.enabledSides}
                     />
+                    {/* Edge toggle zones — click to enable/disable individual attachment sides */}
+                    {isSelected && onToggleSide && (() => {
+                      const baseSides = getBaseSides(comp);
+                      const enabledSides = comp.enabledSides ?? baseSides;
+                      // Rotate base sides to visual position (account for component rotation)
+                      return baseSides.map(baseSide => {
+                        const visualSide = rotateSide(baseSide, comp.rotation);
+                        const isEnabled = enabledSides.includes(baseSide);
+                        return (
+                          <div
+                            key={`edge-${baseSide}`}
+                            className={`build-grid__edge-toggle ${isEnabled ? 'build-grid__edge-toggle--enabled' : 'build-grid__edge-toggle--disabled'}`}
+                            style={edgeToggleStyle(visualSide)}
+                            onClick={(e) => { e.stopPropagation(); onToggleSide(comp.id, baseSide); }}
+                            title={`${isEnabled ? 'Disable' : 'Enable'} ${Side[baseSide]} attachment`}
+                          />
+                        );
+                      });
+                    })()}
                     {isSelected && (
                       <div className="build-grid__actions">
                         <button
@@ -152,15 +194,6 @@ export function BuildGrid({
                             title="Bend hinge"
                           >
                             &#8736;
-                          </button>
-                        )}
-                        {onCycleSides && (
-                          <button
-                            className="build-grid__action-btn"
-                            onClick={(e) => { e.stopPropagation(); onCycleSides(comp.id); }}
-                            title="Cycle attachment sides"
-                          >
-                            &#9635;
                           </button>
                         )}
                         <button

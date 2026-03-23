@@ -36,7 +36,7 @@ function offsetToSide(dx: number, dy: number): Side {
 }
 
 /** Check if two grid-adjacent components can attach (both have attachable sides facing each other) */
-function canAttachRuntime(a: ComponentInstance, b: ComponentInstance): boolean {
+export function canAttachRuntime(a: ComponentInstance, b: ComponentInstance): boolean {
   const dx = b.gridX - a.gridX;
   const dy = b.gridY - a.gridY;
   const sideFromA = offsetToSide(dx, dy);

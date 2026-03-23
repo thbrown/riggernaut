@@ -29,6 +29,9 @@ export const COLLISION_DAMAGE_SCALAR = 0.04; // multiplier on relative KE
 export const MIN_COLLISION_SPEED = 0.3; // tile-widths/sec below which no damage is dealt
 export const MAX_COLLISION_DAMAGE = Infinity; // per-tick cap (Infinity = uncapped)
 
+// --- Collider Margin ---
+export const COLLIDER_MARGIN = 0.02; // meters — tiny gap for sliding clearance between ships
+
 // --- Component Mass (uniform for now) ---
 export const DEFAULT_COMPONENT_MASS = 100; // kg
 

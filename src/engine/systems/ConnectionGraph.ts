@@ -1,8 +1,7 @@
 import { ComponentInstance } from '../entities/ComponentInstance';
 import { Side } from '../../types/components';
 import { getComponentDef } from '../../game/components';
-import { rotateSide, oppositeSide } from '../../types/grid';
-import { sideOffset } from './ConnectivitySystem';
+import { sideOffset, canAttachRuntime } from './ConnectivitySystem';
 
 /**
  * Persistent runtime connection graph.
@@ -261,34 +260,4 @@ export class ConnectionGraph {
     this.adj.get(compA)!.add(compB);
     this.adj.get(compB)!.add(compA);
   }
-}
-
-// --- Helpers (same logic as ConnectivitySystem but used internally) ---
-
-function getAttachableSides(comp: ComponentInstance): Side[] {
-  const def = getComponentDef(comp.type);
-  if (def.getAttachableSides) {
-    return def.getAttachableSides(comp);
-  }
-  let baseSides = def.attachableSides;
-  if (comp.enabledSides) {
-    baseSides = baseSides.filter(s => comp.enabledSides!.includes(s));
-  }
-  return baseSides.map(s => rotateSide(s, comp.rotation));
-}
-
-function offsetToSide(dx: number, dy: number): Side {
-  if (dx === 1) return Side.East;
-  if (dx === -1) return Side.West;
-  if (dy === 1) return Side.South;
-  return Side.North;
-}
-
-export function canAttachRuntime(a: ComponentInstance, b: ComponentInstance): boolean {
-  const dx = b.gridX - a.gridX;
-  const dy = b.gridY - a.gridY;
-  const sideFromA = offsetToSide(dx, dy);
-  const aSides = getAttachableSides(a);
-  const bSides = getAttachableSides(b);
-  return aSides.includes(sideFromA) && bSides.includes(oppositeSide(sideFromA));
 }
