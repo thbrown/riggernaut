@@ -95,7 +95,8 @@ export function processDecouplerInput(
         }
         if (!ship || !comp) continue;
 
-        const body = sim.world.getRigidBody(ship.bodyHandle);
+        // Use the decoupler's actual body (may differ from ship.bodyHandle in hinged ships)
+        const body = sim.world.getRigidBody(comp.bodyHandle) ?? sim.world.getRigidBody(ship.bodyHandle);
         if (!body) continue;
 
         const offset = sideOffset(sideState.side);
@@ -108,9 +109,20 @@ export function processDecouplerInput(
         // Mark unlatched
         sideState.mode = 'unlatched';
 
+        // Remove any FixedJoint for this decoupler side (used when decoupler bridges hinge sections)
+        const djIdx = sim.decouplerJoints.findIndex(
+          dj => dj.compId === dc.compId && dj.side === sideState.side,
+        );
+        if (djIdx !== -1) {
+          const dj = sim.decouplerJoints[djIdx];
+          const fixedJoint = sim.world.getImpulseJoint(dj.jointHandle);
+          if (fixedJoint) sim.world.removeImpulseJoint(fixedJoint, true);
+          sim.decouplerJoints.splice(djIdx, 1);
+        }
+
         if (!neighbor) continue;
 
-        // Compute world-space impulse direction
+        // Compute world-space impulse direction using the decoupler's actual body rotation
         const angle = body.rotation();
         const cos = Math.cos(angle);
         const sin = Math.sin(angle);

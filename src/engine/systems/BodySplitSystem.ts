@@ -42,11 +42,44 @@ export function splitOrphansToNewBodies(
   // Create a new rigid body for each orphan cluster (space junk)
   const parentBody = sim.world.getRigidBody(ship.bodyHandle);
   if (!parentBody) return;
-  const parentAngle = parentBody.rotation();
-  const parentLinvel = parentBody.linvel();
-  const parentAngvel = parentBody.angvel();
 
   for (const cluster of clusters) {
+    // Determine the actual body these components live on
+    const clusterBodyHandle = cluster[0].bodyHandle;
+    const clusterBody = sim.world.getRigidBody(clusterBodyHandle);
+    const actualBody = clusterBody ?? parentBody;
+    const actualAngle = actualBody.rotation();
+    const actualLinvel = actualBody.linvel();
+    const actualAngvel = actualBody.angvel();
+
+    // Check if this cluster's body is a separate section body (hinged ship)
+    // and no remaining ship components share it — if so, reuse the body directly
+    const isOnSeparateBody = clusterBodyHandle !== ship.bodyHandle;
+    const bodyStillUsedByShip = isOnSeparateBody &&
+      ship.components.some(c => c.bodyHandle === clusterBodyHandle);
+
+    if (isOnSeparateBody && !bodyStillUsedByShip && clusterBody) {
+      // Reuse existing body — no need to recreate colliders.
+      // Just detach from parent ship and register as junk.
+      const pos = clusterBody.translation();
+      ship.bodyInterp?.delete(clusterBodyHandle);
+
+      const junkShip: ShipState = {
+        bodyHandle: clusterBodyHandle,
+        components: cluster,
+        isPlayer: false,
+        prevPosition: { x: pos.x, y: pos.y },
+        prevAngle: actualAngle,
+        bodyInterp: new Map([[clusterBodyHandle, { prevPos: { x: pos.x, y: pos.y }, prevAngle: actualAngle }]]),
+      };
+      for (const comp of cluster) {
+        sim.colliderToShip.delete(comp.colliderHandle);
+        sim.colliderToShip.set(comp.colliderHandle, junkShip);
+      }
+      sim.ships.push(junkShip);
+      continue;
+    }
+
     // Compute centroid of cluster in world space
     let cx = 0, cy = 0;
     for (const c of cluster) {
@@ -60,28 +93,28 @@ export function splitOrphansToNewBodies(
     cx /= cluster.length;
     cy /= cluster.length;
 
-    // Offset from parent COM to cluster centroid
-    const parentCom = parentBody.translation();
-    const rx = cx - parentCom.x;
-    const ry = cy - parentCom.y;
+    // Offset from actual body COM to cluster centroid
+    const bodyCom = actualBody.translation();
+    const rx = cx - bodyCom.x;
+    const ry = cy - bodyCom.y;
     // ω × r tangential velocity contribution (2D cross product)
-    const tangentialVx = -parentAngvel * ry;
-    const tangentialVy =  parentAngvel * rx;
+    const tangentialVx = -actualAngvel * ry;
+    const tangentialVy =  actualAngvel * rx;
 
     // Create new body at cluster centroid with momentum-conserving velocity
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(cx, cy)
-      .setRotation(parentAngle)
-      .setLinvel(parentLinvel.x + tangentialVx, parentLinvel.y + tangentialVy)
-      .setAngvel(parentAngvel)
+      .setRotation(actualAngle)
+      .setLinvel(actualLinvel.x + tangentialVx, actualLinvel.y + tangentialVy)
+      .setAngvel(actualAngvel)
       .setAngularDamping(0)
       .setLinearDamping(0)
       .setCanSleep(false);
     const newBody = sim.world.createRigidBody(bodyDesc);
 
     // Un-rotate world offsets into body-local frame
-    const cosA = Math.cos(-parentAngle);
-    const sinA = Math.sin(-parentAngle);
+    const cosA = Math.cos(-actualAngle);
+    const sinA = Math.sin(-actualAngle);
 
     // Move colliders to new body
     for (const comp of cluster) {
@@ -92,7 +125,7 @@ export function splitOrphansToNewBodies(
       // World-space offset from centroid
       const dx = worldPos.x - cx;
       const dy = worldPos.y - cy;
-      // Rotate into body-local frame (inverse of parentAngle)
+      // Rotate into body-local frame (inverse of actualAngle)
       const localX = dx * cosA - dy * sinA;
       const localY = dx * sinA + dy * cosA;
 
@@ -123,8 +156,8 @@ export function splitOrphansToNewBodies(
       components: cluster,
       isPlayer: false,
       prevPosition: { x: cx, y: cy },
-      prevAngle: parentAngle,
-      bodyInterp: new Map([[newBody.handle, { prevPos: { x: cx, y: cy }, prevAngle: parentAngle }]]),
+      prevAngle: actualAngle,
+      bodyInterp: new Map([[newBody.handle, { prevPos: { x: cx, y: cy }, prevAngle: actualAngle }]]),
     };
     for (const comp of cluster) {
       sim.colliderToShip.set(comp.colliderHandle, junkShip);

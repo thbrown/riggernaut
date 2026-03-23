@@ -251,6 +251,11 @@ export class ConnectionGraph {
     }
   }
 
+  /** Check if a component exists as a node in the graph. */
+  hasNode(compId: string): boolean {
+    return this.adj.has(compId);
+  }
+
   /** Add an edge between two components (both directions). */
   addEdge(compA: string, compB: string): void {
     this.addNode(compA);

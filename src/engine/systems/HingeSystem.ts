@@ -1,6 +1,7 @@
 import RAPIER from '@dimforge/rapier2d-compat';
 import { BattleSimulation } from '../BattleSimulation';
 import { HINGE_LOCK_STIFFNESS, HINGE_LOCK_DAMPING, HINGE_SETPOINT_STEP } from '../../config/constants';
+import { ConnectionGraph } from './ConnectionGraph';
 
 export interface HingeJoint {
   jointHandle: number;
@@ -16,6 +17,90 @@ export interface HingeJoint {
 
 const ONE_DEGREE = Math.PI / 180;
 
+/** Detect which hinge joints should be locked because both sides of the hinge
+ *  are connected through an alternate path in the ConnectionGraph (e.g., via a latched decoupler).
+ *  For each hinge, BFS from one neighbor to the other skipping the hinge node itself. */
+function computeLockedHinges(sim: BattleSimulation): Set<number> {
+  const locked = new Set<number>();
+
+  // Build compId → ConnectionGraph lookup
+  const compToGraph = new Map<string, ConnectionGraph>();
+  for (const [, graph] of sim.connectionGraphs) {
+    for (const hj of sim.hingeJoints) {
+      if (graph.hasNode(hj.hingeCompId)) {
+        compToGraph.set(hj.hingeCompId, graph);
+      }
+    }
+  }
+
+  for (const hj of sim.hingeJoints) {
+    const graph = compToGraph.get(hj.hingeCompId);
+    if (!graph) continue;
+
+    const neighbors = graph.getNeighbors(hj.hingeCompId);
+    if (neighbors.length < 2) continue; // Can't form a loop with < 2 neighbors
+
+    // BFS from neighbors[0], skipping the hinge node, check if neighbors[1] reachable
+    const start = neighbors[0];
+    const target = neighbors[1];
+    const visited = new Set<string>([start, hj.hingeCompId]); // Pre-mark hinge as visited to skip it
+    const queue = [start];
+    let found = false;
+
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (id === target) { found = true; break; }
+      for (const nid of graph.getNeighbors(id)) {
+        if (!visited.has(nid)) {
+          visited.add(nid);
+          queue.push(nid);
+        }
+      }
+    }
+
+    if (found) locked.add(hj.jointHandle);
+  }
+
+  return locked;
+}
+
+/** Recompute which hinges are locked by kinematic loops with decoupler FixedJoints.
+ *  Disables motors on newly locked hinges; re-enables and snaps setpoint on newly unlocked ones. */
+export function updateHingeLocks(sim: BattleSimulation): void {
+  const newLocked = computeLockedHinges(sim);
+  const oldLocked = sim.lockedHingeHandles;
+
+  // Newly locked: disable motor
+  for (const handle of newLocked) {
+    if (!oldLocked.has(handle)) {
+      const joint = sim.world.getImpulseJoint(handle);
+      if (joint) {
+        (joint as RAPIER.RevoluteImpulseJoint).configureMotorPosition(0, 0, 0);
+      }
+    }
+  }
+
+  // Newly unlocked: snap setpoint to current angle, re-enable motor
+  for (const handle of oldLocked) {
+    if (!newLocked.has(handle)) {
+      const hj = sim.hingeJoints.find(h => h.jointHandle === handle);
+      const joint = sim.world.getImpulseJoint(handle);
+      if (hj && joint) {
+        const revolute = joint as RAPIER.RevoluteImpulseJoint;
+        // Compute current revolute angle from body rotations
+        const bodyA = sim.world.getRigidBody(hj.bodyAHandle);
+        const bodyB = sim.world.getRigidBody(hj.bodyBHandle);
+        if (bodyA && bodyB) {
+          hj.setpoint = bodyB.rotation() - bodyA.rotation();
+        }
+        revolute.configureMotorPosition(hj.setpoint, HINGE_LOCK_STIFFNESS, HINGE_LOCK_DAMPING);
+      }
+    }
+  }
+
+  sim.lockedHingeHandles = newLocked;
+}
+
 /** Process hinge motor input each tick.
  *  Single press: nudge setpoint by 1°. Hold: move by HINGE_SETPOINT_STEP per tick. */
 export function processHingeInput(
@@ -25,6 +110,9 @@ export function processHingeInput(
   pressedKeys: Set<string>,
 ) {
   for (const hj of hingeJoints) {
+    // Skip hinges locked by decoupler FixedJoint loops
+    if (sim.lockedHingeHandles.has(hj.jointHandle)) continue;
+
     const joint = sim.world.getImpulseJoint(hj.jointHandle);
     if (!joint) continue;
 
@@ -89,6 +177,7 @@ export function processHingeInput(
   const hotkeyGroups = new Map<string, HingeJoint[]>();
   for (const hj of hingeJoints) {
     if (!hj.hotkeyLeft && !hj.hotkeyRight) continue;
+    if (sim.lockedHingeHandles.has(hj.jointHandle)) continue;
     const key = `${hj.hotkeyLeft ?? ''}:${hj.hotkeyRight ?? ''}`;
     let group = hotkeyGroups.get(key);
     if (!group) { group = []; hotkeyGroups.set(key, group); }

@@ -1,6 +1,6 @@
 import RAPIER from '@dimforge/rapier2d-compat';
 import { ShipBlueprint } from '../types/physics';
-import { ComponentType } from '../types/components';
+import { ComponentType, Side } from '../types/components';
 import { getComponentDef } from '../game/components';
 import { ComponentInstance, createComponentInstance } from './entities/ComponentInstance';
 import { InputManager } from './InputManager';
@@ -13,10 +13,11 @@ import { detonateExplosive } from './systems/ExplosionSystem';
 import { runDamagePhase } from './systems/DamagePhaseSystem';
 import { checkWinLoss } from './systems/WinLossSystem';
 import { BattleLog } from './BattleLog';
-import { HingeJoint, processHingeInput } from './systems/HingeSystem';
+import { HingeJoint, processHingeInput, updateHingeLocks } from './systems/HingeSystem';
 import { DecouplerState, processDecouplerInput, processDecouplerAttraction, processDecouplerDocking, buildDecouplerSides } from './systems/DecouplerSystem';
 import { DeterministicRng } from './DeterministicRng';
 import { ConnectionGraph } from './systems/ConnectionGraph';
+import { sideOffset } from './systems/ConnectivitySystem';
 import { CameraSystem } from './systems/CameraSystem';
 
 export interface ShipState {
@@ -51,6 +52,10 @@ export class BattleSimulation {
   /** Body handles currently involved in at least one same-ship contact (ref-counted) */
   sameShipContactBodies = new Map<number, number>();
   decouplers: DecouplerState[] = [];
+  /** FixedJoints created for latched decoupler edges between hinge sections */
+  decouplerJoints: Array<{ jointHandle: number; compId: string; side: Side }> = [];
+  /** Hinge joints locked because they form kinematic loops with decoupler FixedJoints */
+  lockedHingeHandles = new Set<number>();
   rng = new DeterministicRng();
   /** Persistent connection graphs keyed by bodyHandle (for hinged ships, primary body handle) */
   connectionGraphs = new Map<number, ConnectionGraph>();
@@ -197,6 +202,26 @@ export class BattleSimulation {
     const visited = new Set<string>();
     const sections: Array<{ comps: typeof blueprint.components; sectionId: number }> = [];
 
+    // Build set of directed edges blocked by latchable decoupler sides.
+    // These edges create section boundaries (like hinges) so that decoupling
+    // can later release a FixedJoint instead of trying to restructure bodies.
+    const blockedEdges = new Set<string>();
+    for (const comp of blueprint.components) {
+      if (comp.type !== ComponentType.Decoupler) continue;
+      const sides = buildDecouplerSides(comp.rotation, comp.hotkeys, comp.hotkey);
+      for (const sideState of sides) {
+        if (!sideState.hotkey) continue; // No hotkey = permanent connection, don't block
+        const off = sideOffset(sideState.side);
+        const neighbor = blueprint.components.find(
+          c => c.gridX === comp.gridX + off.dx && c.gridY === comp.gridY + off.dy,
+        );
+        if (neighbor) {
+          blockedEdges.add(`${comp.id}|${neighbor.id}`);
+          blockedEdges.add(`${neighbor.id}|${comp.id}`);
+        }
+      }
+    }
+
     const cmdComp = blueprint.components.find(c => c.type === ComponentType.CommandModule);
     const startOrder = cmdComp
       ? [cmdComp, ...blueprint.components.filter(c => c !== cmdComp)]
@@ -216,6 +241,7 @@ export class BattleSimulation {
         for (const neighborId of blueprint.adjacency[id] ?? []) {
           if (visited.has(neighborId)) continue;
           if (hingeIds.has(neighborId)) continue;
+          if (blockedEdges.has(`${id}|${neighborId}`)) continue;
           visited.add(neighborId);
           queue.push(neighborId);
         }
@@ -547,6 +573,54 @@ export class BattleSimulation {
 
     allComponents.sort((a, b) => (a.hotkeyPriority ?? 0) - (b.hotkeyPriority ?? 0));
 
+    // Create FixedJoints for latched decoupler edges that span different bodies.
+    // These hold sections rigid until the decoupler is activated.
+    for (const comp of blueprint.components) {
+      if (comp.type !== ComponentType.Decoupler) continue;
+      const sides = buildDecouplerSides(comp.rotation, comp.hotkeys, comp.hotkey);
+      const dcInst = allComponents.find(c => c.id === comp.id);
+      if (!dcInst) continue;
+
+      for (const sideState of sides) {
+        if (!sideState.hotkey) continue;
+        const off = sideOffset(sideState.side);
+        const neighborInst = allComponents.find(
+          c => c.gridX === comp.gridX + off.dx && c.gridY === comp.gridY + off.dy,
+        );
+        if (!neighborInst || neighborInst.bodyHandle === dcInst.bodyHandle) continue;
+
+        const dcBody = this.world.getRigidBody(dcInst.bodyHandle);
+        const nBody = this.world.getRigidBody(neighborInst.bodyHandle);
+        if (!dcBody || !nBody) continue;
+
+        // Compute shared anchor point (midpoint between the two components) in each body's local frame
+        const dcCollider = this.world.getCollider(dcInst.colliderHandle);
+        const nCollider = this.world.getCollider(neighborInst.colliderHandle);
+        if (!dcCollider || !nCollider) continue;
+
+        const dcWorldPos = dcCollider.translation();
+        const nWorldPos = nCollider.translation();
+        const midX = (dcWorldPos.x + nWorldPos.x) / 2;
+        const midY = (dcWorldPos.y + nWorldPos.y) / 2;
+
+        const anchorA = worldToLocal(dcBody, midX, midY);
+        const anchorB = worldToLocal(nBody, midX, midY);
+        const relRotation = dcBody.rotation() - nBody.rotation();
+
+        const jp = RAPIER.JointData.fixed(anchorA, 0, anchorB, relRotation);
+        const joint = this.world.createImpulseJoint(jp, dcBody, nBody, true);
+
+        this.decouplerJoints.push({
+          jointHandle: joint.handle,
+          compId: comp.id,
+          side: sideState.side,
+        });
+      }
+    }
+
+    // Lock hinge motors that form kinematic loops with the FixedJoints
+    updateHingeLocks(this);
+
     // Build connection graph spanning all bodies (hinged ship)
     const hingedUnlatchedSides = new Map<string, import('../types/components').Side[]>();
     for (const dc of this.decouplers) {
@@ -726,13 +800,16 @@ export class BattleSimulation {
     // Player blaster fire (reads comp.isActive)
     processBlasterFire(this, this.projectiles);
 
-    // Hinge motor control (tap = 1° nudge, hold = HINGE_SETPOINT_STEP per tick)
-    processHingeInput(this, this.hingeJoints, heldKeys, pressedKeys);
-
-    // Decoupler input (uses pressedKeys for mode toggling)
+    // Decoupler input first — may remove FixedJoints that affect hinge lock state
     if (gameActive) {
       processDecouplerInput(this, pressedKeys, this.decouplers);
     }
+
+    // Recompute hinge locks (decoupler FixedJoint removal may have broken loops)
+    updateHingeLocks(this);
+
+    // Hinge motor control (tap = 1° nudge, hold = HINGE_SETPOINT_STEP per tick)
+    processHingeInput(this, this.hingeJoints, heldKeys, pressedKeys);
 
     // Decoupler attraction (unlatched decouplers pull nearby bodies)
     processDecouplerAttraction(this, this.decouplers);
