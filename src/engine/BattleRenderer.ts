@@ -16,6 +16,7 @@ import {
   spawnFireParticles, spawnExplosionParticles,
 } from './ParticleSystem';
 import { hotkeyDisplayChar } from '../utils/hotkey-display';
+import { ComponentInstance } from './entities/ComponentInstance';
 
 interface Star { x: number; y: number; size: number; brightness: number; parallax: number; }
 interface StarField { stars: Star[]; }

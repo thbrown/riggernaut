@@ -30,7 +30,6 @@ export class CameraSystem {
 
   /** Mass-change transition state */
   private transitionFrom: { x: number; y: number } | null = null;
-  private transitionTo: { x: number; y: number } | null = null;
   private transitionTick = 0;
   private transitionDuration = 0;
 
@@ -181,11 +180,10 @@ export class CameraSystem {
   }
 
   /** Call after a split/merge affecting the player ship to smooth the transition. */
-  onMassChange(newCom: { x: number; y: number }): void {
+  onMassChange(_newCom: { x: number; y: number }): void {
     if (this.deathPhase !== null) return; // don't interfere with death camera
     // Start transition from current camera position (in physics space)
     this.transitionFrom = { x: this.x / PIXELS_PER_METER, y: this.y / PIXELS_PER_METER };
-    this.transitionTo = { x: newCom.x, y: newCom.y };
     this.transitionTick = 0;
     this.transitionDuration = MASS_CHANGE_TICKS;
   }
@@ -196,7 +194,6 @@ export class CameraSystem {
       this.transitionTick++;
       if (this.transitionTick >= this.transitionDuration) {
         this.transitionFrom = null;
-        this.transitionTo = null;
         this.transitionDuration = 0;
       }
     }

@@ -173,7 +173,7 @@ export function BuildGrid({
                             className={`build-grid__edge-toggle ${isEnabled ? 'build-grid__edge-toggle--enabled' : 'build-grid__edge-toggle--disabled'}`}
                             style={edgeToggleStyle(visualSide)}
                             onClick={(e) => { e.stopPropagation(); onToggleSide(comp.id, baseSide); }}
-                            title={`${isEnabled ? 'Disable' : 'Enable'} ${Side[baseSide]} attachment`}
+                            title={`${isEnabled ? 'Disable' : 'Enable'} ${baseSide.charAt(0).toUpperCase() + baseSide.slice(1)} attachment`}
                           />
                         );
                       });

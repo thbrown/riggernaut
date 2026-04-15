@@ -94,7 +94,6 @@ export function updateHingeLocks(sim: BattleSimulation): void {
       const hj = sim.hingeJoints.find(h => h.jointHandle === handle);
       const joint = sim.world.getImpulseJoint(handle);
       if (hj && joint) {
-        const revolute = joint as RAPIER.RevoluteImpulseJoint;
         // Compute current revolute angle from body rotations
         const bodyA = sim.world.getRigidBody(hj.bodyAHandle);
         const bodyB = sim.world.getRigidBody(hj.bodyBHandle);
