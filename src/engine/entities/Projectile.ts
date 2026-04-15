@@ -10,6 +10,10 @@ export interface Projectile {
   y: number;
   vx: number;
   vy: number;
+  /** Barrel firing direction (world-space unit vector) — used for rendering so the bolt
+   *  always appears perpendicular to the barrel regardless of ship velocity. */
+  dirX: number;
+  dirY: number;
   damage: number;
   color: string;
   width: number;
@@ -38,11 +42,13 @@ export function createProjectile(
     x, y,
     vx: dirX * config.boltSpeed + bodyVelX,
     vy: dirY * config.boltSpeed + bodyVelY,
+    dirX,
+    dirY,
     damage: config.damage,
     color: config.boltColor,
     width: config.boltWidth * TILE_SIZE,
     length: config.boltLength * TILE_SIZE,
-    maxRange: 30 * TILE_SIZE,
+    maxRange: config.boltRange * TILE_SIZE,
     distanceTraveled: 0,
     alive: true,
   };

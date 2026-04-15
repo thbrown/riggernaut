@@ -17,9 +17,8 @@ import {
 } from './ParticleSystem';
 import { hotkeyDisplayChar } from '../utils/hotkey-display';
 
-interface StarField {
-  stars: Array<{ x: number; y: number; size: number; brightness: number }>;
-}
+interface Star { x: number; y: number; size: number; brightness: number; parallax: number; }
+interface StarField { stars: Star[]; }
 
 export class BattleRenderer {
   private ctx: CanvasRenderingContext2D;
@@ -27,18 +26,39 @@ export class BattleRenderer {
   private height = 0;
   private camera: CameraSystem | null = null;
   private starField: StarField;
+  rotationLocked = true;
+  private currentCameraAngle = 0;
+
+  toggleRotationLock() {
+    this.rotationLocked = !this.rotationLocked;
+  }
+
   constructor(private canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d')!;
     this.resize();
 
-    // Generate static star field
+    // Generate two-layer star field: distant (slow parallax) + near (fast parallax)
+    // spread/T are large so the field covers extreme zoom-out without repetition
     this.starField = { stars: [] };
-    for (let i = 0; i < 300; i++) {
+    const spread = 50000;
+    // Far layer — many small dim stars, slow parallax
+    for (let i = 0; i < 6000; i++) {
       this.starField.stars.push({
-        x: (Math.random() - 0.5) * 4000,
-        y: (Math.random() - 0.5) * 4000,
-        size: Math.random() * 1.5 + 0.5,
-        brightness: Math.random() * 0.6 + 0.2,
+        x: (Math.random() - 0.5) * spread,
+        y: (Math.random() - 0.5) * spread,
+        size: Math.random() * 1.2 + 0.3,
+        brightness: Math.random() * 0.35 + 0.1,
+        parallax: 0.08,
+      });
+    }
+    // Near layer — fewer large bright stars, fast parallax (strong motion cue)
+    for (let i = 0; i < 1200; i++) {
+      this.starField.stars.push({
+        x: (Math.random() - 0.5) * spread,
+        y: (Math.random() - 0.5) * spread,
+        size: Math.random() * 2.0 + 1.2,
+        brightness: Math.random() * 0.5 + 0.5,
+        parallax: 0.55,
       });
     }
   }
@@ -78,12 +98,31 @@ export class BattleRenderer {
     ctx.fillStyle = '#0a0a1a';
     ctx.fillRect(0, 0, w, h);
 
+    // Compute interpolated player rotation for rotation-lock mode
+    let cameraAngle = 0;
+    if (this.rotationLocked) {
+      const playerShip = sim.getPlayerShip();
+      if (playerShip) {
+        const body = sim.world.getRigidBody(playerShip.bodyHandle);
+        if (body) {
+          const curAngle = body.rotation();
+          const prevAngle = playerShip.prevAngle;
+          let dAngle = curAngle - prevAngle;
+          while (dAngle > Math.PI) dAngle -= 2 * Math.PI;
+          while (dAngle < -Math.PI) dAngle += 2 * Math.PI;
+          cameraAngle = prevAngle + dAngle * alpha;
+        }
+      }
+    }
+    this.currentCameraAngle = cameraAngle;
+
     ctx.save();
 
-    // Camera transform: center screen, then zoom, then translate
+    // Camera transform: center screen, zoom, optional counter-rotation, then translate
     const cam = this.camera!;
     ctx.translate(w / 2, h / 2);
     ctx.scale(cam.zoom, cam.zoom);
+    if (this.rotationLocked) ctx.rotate(-cameraAngle);
     ctx.translate(-cam.x, -cam.y);
 
     // Draw star field (parallax)
@@ -121,11 +160,16 @@ export class BattleRenderer {
   }
 
   private drawStars(ctx: CanvasRenderingContext2D) {
-    const parallax = 0.3;
     const cam = this.camera!;
+    // Fixed tiling period matching the star spread — never changes with zoom
+    const T = 50000;
     for (const star of this.starField.stars) {
-      const sx = star.x + cam.x * parallax;
-      const sy = star.y + cam.y * parallax;
+      // Screen-space offset from camera centre, wrapped to [-T/2, T/2)
+      const ox = ((( star.x - cam.x * (1 - star.parallax)) % T) + T) % T - T / 2;
+      const oy = ((( star.y - cam.y * (1 - star.parallax)) % T) + T) % T - T / 2;
+      // Convert back to world-space draw position
+      const sx = ox + cam.x;
+      const sy = oy + cam.y;
       ctx.fillStyle = `rgba(255, 255, 255, ${star.brightness})`;
       ctx.beginPath();
       ctx.arc(sx, sy, star.size, 0, Math.PI * 2);
@@ -354,7 +398,7 @@ export class BattleRenderer {
   private drawProjectile(ctx: CanvasRenderingContext2D, proj: Projectile) {
     const px = proj.x * PIXELS_PER_METER;
     const py = proj.y * PIXELS_PER_METER;
-    const angle = Math.atan2(proj.vy, proj.vx);
+    const angle = Math.atan2(proj.dirY, proj.dirX);
     const halfW = (proj.width / 2) * PIXELS_PER_METER;
     const halfL = (proj.length / 2) * PIXELS_PER_METER;
 
@@ -445,6 +489,7 @@ export class BattleRenderer {
     const w = this.width;
     const h = this.height;
 
+
     // Speed / direction indicator (bottom-left)
     const playerShipHUD = sim.getPlayerShip();
     if (playerShipHUD) {
@@ -480,7 +525,7 @@ export class BattleRenderer {
         if (speed > 0.3) {
           const maxDisplaySpeed = 20;
           const arrowLen = Math.min(indRadius, (speed / maxDisplaySpeed) * indRadius);
-          const velAngle = Math.atan2(vel.y, vel.x);
+          const velAngle = Math.atan2(vel.y, vel.x) - (this.rotationLocked ? this.currentCameraAngle : 0);
           const tipX = indX + Math.cos(velAngle) * arrowLen;
           const tipY = indY + Math.sin(velAngle) * arrowLen;
 
@@ -543,7 +588,18 @@ export class BattleRenderer {
     ctx.fillRect(mmX, mmY, mmSize, mmSize);
     ctx.strokeRect(mmX, mmY, mmSize, mmSize);
 
-    // Draw dots for ships
+    // Clip dots to minimap square
+    ctx.beginPath();
+    ctx.rect(mmX, mmY, mmSize, mmSize);
+    ctx.clip();
+
+    // Rotate around minimap centre when rotation-locked
+    const mmCx = mmX + mmSize / 2;
+    const mmCy = mmY + mmSize / 2;
+    ctx.translate(mmCx, mmCy);
+    if (this.rotationLocked) ctx.rotate(-this.currentCameraAngle);
+
+    // Draw dots for ships (coordinates relative to minimap centre)
     for (const ship of sim.ships) {
       const body = sim.world.getRigidBody(ship.bodyHandle);
       if (!body) continue;
@@ -554,12 +610,9 @@ export class BattleRenderer {
 
       if (Math.abs(relX) > 0.5 || Math.abs(relY) > 0.5) continue;
 
-      const dotX = mmX + mmSize / 2 + relX * mmSize;
-      const dotY = mmY + mmSize / 2 + relY * mmSize;
-
       ctx.fillStyle = ship.isPlayer ? '#88ccff' : '#ff6644';
       ctx.beginPath();
-      ctx.arc(dotX, dotY, 3, 0, Math.PI * 2);
+      ctx.arc(relX * mmSize, relY * mmSize, 3, 0, Math.PI * 2);
       ctx.fill();
     }
 
@@ -575,17 +628,28 @@ export class BattleRenderer {
       if (!body) continue;
       const pos = body.translation();
 
-      const screenX = (pos.x * PIXELS_PER_METER - this.camera!.x) * this.camera!.zoom + w / 2;
-      const screenY = (pos.y * PIXELS_PER_METER - this.camera!.y) * this.camera!.zoom + h / 2;
+      const cx = w / 2;
+      const cy = h / 2;
+
+      // World→screen, then apply camera counter-rotation if locked
+      let relX = (pos.x * PIXELS_PER_METER - this.camera!.x) * this.camera!.zoom;
+      let relY = (pos.y * PIXELS_PER_METER - this.camera!.y) * this.camera!.zoom;
+      if (this.rotationLocked) {
+        const cos = Math.cos(-this.currentCameraAngle);
+        const sin = Math.sin(-this.currentCameraAngle);
+        const rx = relX * cos - relY * sin;
+        const ry = relX * sin + relY * cos;
+        relX = rx; relY = ry;
+      }
+      const screenX = cx + relX;
+      const screenY = cy + relY;
 
       // Only show indicator if off screen
       const margin = 40;
       if (screenX > margin && screenX < w - margin && screenY > margin && screenY < h - margin) continue;
 
       // Clamp to screen edge
-      const cx = w / 2;
-      const cy = h / 2;
-      const angle = Math.atan2(screenY - cy, screenX - cx);
+      const angle = Math.atan2(relY, relX);
       const edgePad = 30;
       const indX = Math.max(edgePad, Math.min(w - edgePad, cx + Math.cos(angle) * (w / 2 - edgePad)));
       const indY = Math.max(edgePad, Math.min(h - edgePad, cy + Math.sin(angle) * (h / 2 - edgePad)));

@@ -106,11 +106,10 @@ function detectDisconnection(sim: BattleSimulation, ship: ShipState) {
     sim.connectionGraphs.set(ship.bodyHandle, graph);
   }
 
-  // Remove destroyed components from graph
-  const destroyed = ship.components.filter(c => c.health <= 0);
-  for (const comp of destroyed) {
-    graph.removeComponent(comp.id);
-  }
+  // Sync graph with living components — dead nodes may not be health<=0 here
+  // because ship.components is already filtered before detectDisconnection is called
+  const livingIds = new Set(ship.components.map(c => c.id));
+  graph.syncWithLiving(livingIds);
 
   const reachable = graph.getReachableFromAnchors(ship.components);
 

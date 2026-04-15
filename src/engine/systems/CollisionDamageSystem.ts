@@ -47,11 +47,12 @@ export function processCollisionDamage(sim: BattleSimulation, events: Array<[num
     const relVy = v1.y - v2.y;
     const relSpeed = Math.sqrt(relVx * relVx + relVy * relVy);
 
-    // Minimum speed threshold
-    if (relSpeed < MIN_COLLISION_SPEED * TILE_SIZE) continue;
-
     const def1 = getComponentDef(comp1.type);
     const def2 = getComponentDef(comp2.type);
+
+    // Minimum speed threshold (bypassed if either component ignores the deadzone)
+    const ignoreDeadzone = def1.ignoreCollisionDamageDeadzone?.() || def2.ignoreCollisionDamageDeadzone?.();
+    if (!ignoreDeadzone && relSpeed < MIN_COLLISION_SPEED * TILE_SIZE) continue;
 
     // Use actual rigid body mass for proper collision damage
     const m1 = body1.mass();

@@ -226,16 +226,17 @@ export class CameraSystem {
   }
 
   zoomIn(): void {
-    this.targetZoom = Math.min(this.targetZoom + CAMERA_ZOOM_STEP, CAMERA_MAX_ZOOM);
+    this.targetZoom = Math.min(this.targetZoom * CAMERA_ZOOM_STEP, CAMERA_MAX_ZOOM);
   }
 
   zoomOut(): void {
-    this.targetZoom = Math.max(this.targetZoom - CAMERA_ZOOM_STEP, CAMERA_MIN_ZOOM);
+    this.targetZoom = Math.max(this.targetZoom / CAMERA_ZOOM_STEP, CAMERA_MIN_ZOOM);
   }
 
   adjustZoom(delta: number): void {
+    const factor = delta > 0 ? 1 / CAMERA_ZOOM_STEP : CAMERA_ZOOM_STEP;
     this.targetZoom = Math.max(CAMERA_MIN_ZOOM, Math.min(CAMERA_MAX_ZOOM,
-      this.targetZoom - delta * CAMERA_ZOOM_STEP,
+      this.targetZoom * factor,
     ));
   }
 }

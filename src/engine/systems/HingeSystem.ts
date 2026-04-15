@@ -1,6 +1,6 @@
 import RAPIER from '@dimforge/rapier2d-compat';
 import { BattleSimulation } from '../BattleSimulation';
-import { HINGE_LOCK_STIFFNESS, HINGE_LOCK_DAMPING, HINGE_SETPOINT_STEP } from '../../config/constants';
+import { HINGE_P_GAIN, HINGE_MAX_VEL, HINGE_VEL_DAMPING, HINGE_SETPOINT_STEP } from '../../config/constants';
 import { ConnectionGraph } from './ConnectionGraph';
 
 export interface HingeJoint {
@@ -16,6 +16,14 @@ export interface HingeJoint {
 }
 
 const ONE_DEGREE = Math.PI / 180;
+
+/** Normalize an angle difference to [-π, π] to avoid wrap-around errors. */
+function normalizeAngle(a: number): number {
+  let d = a;
+  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  return d;
+}
 
 /** Detect which hinge joints should be locked because both sides of the hinge
  *  are connected through an alternate path in the ConnectionGraph (e.g., via a latched decoupler).
@@ -91,9 +99,8 @@ export function updateHingeLocks(sim: BattleSimulation): void {
         const bodyA = sim.world.getRigidBody(hj.bodyAHandle);
         const bodyB = sim.world.getRigidBody(hj.bodyBHandle);
         if (bodyA && bodyB) {
-          hj.setpoint = bodyB.rotation() - bodyA.rotation();
+          hj.setpoint = normalizeAngle(bodyB.rotation() - bodyA.rotation());
         }
-        revolute.configureMotorPosition(hj.setpoint, HINGE_LOCK_STIFFNESS, HINGE_LOCK_DAMPING);
       }
     }
   }
@@ -109,9 +116,19 @@ export function processHingeInput(
   heldKeys: Set<string>,
   pressedKeys: Set<string>,
 ) {
+  // Build a component-id → owner lookup so detached segments can't respond to player hotkeys
+  const compOwner = new Map<string, string | null>();
+  for (const ship of sim.ships) {
+    for (const comp of ship.components) {
+      compOwner.set(comp.id, comp.owner);
+    }
+  }
+
   for (const hj of hingeJoints) {
     // Skip hinges locked by decoupler FixedJoint loops
     if (sim.lockedHingeHandles.has(hj.jointHandle)) continue;
+    // Skip hinges on non-player segments
+    if (compOwner.get(hj.hingeCompId) !== 'player') continue;
 
     const joint = sim.world.getImpulseJoint(hj.jointHandle);
     if (!joint) continue;
@@ -139,20 +156,18 @@ export function processHingeInput(
       dir = 1;
     }
 
+    const bodyA = sim.world.getRigidBody(hj.bodyAHandle);
+    const bodyB = sim.world.getRigidBody(hj.bodyBHandle);
+    const currentAngle = (bodyA && bodyB) ? normalizeAngle(bodyB.rotation() - bodyA.rotation()) : hj.setpoint;
+
     // Check if either body of this hinge is involved in any same-ship contact
     const inContact = sim.sameShipContactBodies.has(hj.bodyAHandle)
       || sim.sameShipContactBodies.has(hj.bodyBHandle);
 
     if (inContact) {
       // Snap setpoint to current actual angle so motor stops pushing into overlap
-      const bodyA = sim.world.getRigidBody(hj.bodyAHandle);
-      const bodyB = sim.world.getRigidBody(hj.bodyBHandle);
-      if (bodyA && bodyB) {
-        const currentAngle = bodyB.rotation() - bodyA.rotation();
-        // Only snap if setpoint is further from zero than actual angle (motor is pushing)
-        if (Math.abs(hj.setpoint) > Math.abs(currentAngle)) {
-          hj.setpoint = currentAngle;
-        }
+      if (Math.abs(hj.setpoint) > Math.abs(currentAngle)) {
+        hj.setpoint = currentAngle;
       }
     }
 
@@ -169,7 +184,11 @@ export function processHingeInput(
       }
     }
 
-    revolute.configureMotorPosition(hj.setpoint, HINGE_LOCK_STIFFNESS, HINGE_LOCK_DAMPING);
+    // Velocity motor: command angular velocity proportional to angle error, capped at max.
+    // As the hinge approaches the setpoint the commanded velocity tapers to zero — no overshoot.
+    const error = normalizeAngle(hj.setpoint - currentAngle);
+    const targetVel = Math.sign(error) * Math.min(Math.abs(error) * HINGE_P_GAIN, HINGE_MAX_VEL);
+    revolute.configureMotorVelocity(targetVel, HINGE_VEL_DAMPING);
   }
 
   // Sync setpoints across hinges that share the same hotkey pair.
@@ -197,7 +216,12 @@ export function processHingeInput(
         hj.setpoint = syncSetpoint;
         const joint = sim.world.getImpulseJoint(hj.jointHandle);
         if (joint) {
-          (joint as RAPIER.RevoluteImpulseJoint).configureMotorPosition(syncSetpoint, HINGE_LOCK_STIFFNESS, HINGE_LOCK_DAMPING);
+          const bA = sim.world.getRigidBody(hj.bodyAHandle);
+          const bB = sim.world.getRigidBody(hj.bodyBHandle);
+          const cur = (bA && bB) ? normalizeAngle(bB.rotation() - bA.rotation()) : syncSetpoint;
+          const err = normalizeAngle(syncSetpoint - cur);
+          const tVel = Math.sign(err) * Math.min(Math.abs(err) * HINGE_P_GAIN, HINGE_MAX_VEL);
+          (joint as RAPIER.RevoluteImpulseJoint).configureMotorVelocity(tVel, HINGE_VEL_DAMPING);
         }
       }
     }

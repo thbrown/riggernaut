@@ -20,14 +20,13 @@ export const COST_MIN = 1;
 export const COST_MAX = 10;
 
 // --- Battle / Arena ---
-export const STARTING_DIST = 300; // meters between opposing ships
+export const STARTING_DIST = 150; // meters between opposing ships
 export const ALLY_STARTING_DIST = 10; // meters between allied ships (closest components)
 export const BATTLE_COUNTDOWN_SECONDS = 3;
 
 // --- Collision Damage ---
 export const COLLISION_DAMAGE_SCALAR = 0.04; // multiplier on relative KE
-export const MIN_COLLISION_SPEED = 0.3; // tile-widths/sec below which no damage is dealt
-export const MAX_COLLISION_DAMAGE = Infinity; // per-tick cap (Infinity = uncapped)
+export const MIN_COLLISION_SPEED = 1.5; // tile-widths/sec below which no damage is dealtexport const MAX_COLLISION_DAMAGE = Infinity; // per-tick cap (Infinity = uncapped)
 
 // --- Collider Margin ---
 export const COLLIDER_MARGIN = 0.01; // meters — tiny gap for sliding clearance between ships
@@ -59,17 +58,16 @@ export const ATTRACTOR_ANGULAR_STIFFNESS = 200; // torque scale for rotation ali
 export const ATTRACTOR_ANGULAR_DAMPING = 30; // angular velocity damping during attraction
 
 // --- Hinge ---
-export const HINGE_MOTOR_VELOCITY = 2; // rad/s (unused with setpoint mode)
-export const HINGE_MOTOR_DAMPING = 50; // (unused with setpoint mode)
-export const HINGE_LOCK_STIFFNESS = 1e6;
-export const HINGE_LOCK_DAMPING = 1e4;
+export const HINGE_P_GAIN = 20;          // rad/s commanded per radian of angle error
+export const HINGE_MAX_VEL = 12;         // rad/s — cap on commanded angular velocity
+export const HINGE_VEL_DAMPING = 1e4;   // damping applied at the joint to hold position
 export const HINGE_SETPOINT_STEP = Math.PI / 400; // radians per key press (45°)
 
 // --- Camera ---
 export const CAMERA_DEFAULT_ZOOM = 1;
-export const CAMERA_MIN_ZOOM = 0.2;
+export const CAMERA_MIN_ZOOM = 0.001;
 export const CAMERA_MAX_ZOOM = 4;
-export const CAMERA_ZOOM_STEP = 0.1;
+export const CAMERA_ZOOM_STEP = 1.15; // multiplicative factor per scroll step
 export const CAMERA_LERP_SPEED = 0.08; // per frame interpolation factor
 
 // --- HUD ---

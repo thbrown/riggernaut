@@ -42,6 +42,7 @@ export interface EngineConfig {
 export interface BlasterConfig {
   kind: 'blaster';
   boltSpeed: number;
+  boltRange: number;
   damage: number;
   fireRatePerSec: number;
   kickback: number;
@@ -98,6 +99,7 @@ export interface ComponentDef {
   isConnectivityAnchor?: boolean;
   enablesDroneControl?: boolean;
   chainReactsOnDeath?: boolean;
+  ignoreCollisionDamageDeadzone?(): boolean;
 
   // Type-specific configuration
   config: ComponentConfig;

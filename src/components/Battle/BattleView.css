@@ -30,6 +30,31 @@
   border-color: rgba(255, 255, 255, 0.4);
 }
 
+.battle-view__rot-lock {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.75rem;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #ccc;
+  border-radius: 4px;
+  z-index: 10;
+  cursor: pointer;
+}
+
+.battle-view__rot-lock:hover {
+  background: rgba(0, 0, 0, 0.8);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.battle-view__rot-lock--active {
+  background: rgba(136, 204, 255, 0.15);
+  border-color: rgba(136, 204, 255, 0.6);
+  color: #88ccff;
+}
+
 .battle-view__result {
   position: absolute;
   inset: 0;

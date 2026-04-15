@@ -256,6 +256,15 @@ export class ConnectionGraph {
     return this.adj.has(compId);
   }
 
+  /** Remove any graph nodes whose IDs are not in the living set. */
+  syncWithLiving(livingIds: Set<string>): void {
+    for (const id of [...this.adj.keys()]) {
+      if (!livingIds.has(id)) {
+        this.removeComponent(id);
+      }
+    }
+  }
+
   /** Add an edge between two components (both directions). */
   addEdge(compA: string, compB: string): void {
     this.addNode(compA);

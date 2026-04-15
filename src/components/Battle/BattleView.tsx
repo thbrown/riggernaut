@@ -20,7 +20,9 @@ export function BattleView() {
   const simRef = useRef<BattleSimulation | null>(null);
   const loopRef = useRef<GameLoop | null>(null);
   const inputRef = useRef<InputManager | null>(null);
+  const rendererRef = useRef<BattleRenderer | null>(null);
   const [gameResult, setGameResult] = useState<string | null>(null);
+  const [rotationLocked, setRotationLocked] = useState(true);
 
   const handleEndBattle = useCallback(() => {
     dispatch({ type: 'SET_PHASE', phase: GamePhase.Summary });
@@ -74,6 +76,7 @@ export function BattleView() {
       simRef.current = sim;
 
       const renderer = new BattleRenderer(canvas);
+      rendererRef.current = renderer;
 
       const loop = new GameLoop(
         (dt) => {
@@ -127,11 +130,23 @@ export function BattleView() {
     };
   }, [state.blueprint]);
 
+  const handleToggleRotationLock = useCallback(() => {
+    rendererRef.current?.toggleRotationLock();
+    setRotationLocked(v => !v);
+  }, []);
+
   return (
     <div className="battle-view">
       <canvas ref={canvasRef} className="battle-view__canvas" />
       <button className="battle-view__exit" onClick={handleEndBattle}>
         End Battle (ESC)
+      </button>
+      <button
+        className={`battle-view__rot-lock${rotationLocked ? ' battle-view__rot-lock--active' : ''}`}
+        onClick={handleToggleRotationLock}
+        title="Lock camera rotation to ship"
+      >
+        ⟳ Rot Lock
       </button>
       {gameResult && (
         <div className="battle-view__result">

@@ -81,7 +81,7 @@ function fireEnginesInDirection(
   }
 }
 
-const RAMMER_MAX_SPEED = 15; // desired approach speed (m/s)
+const RAMMER_MAX_SPEED = 30; // desired approach speed (m/s)
 const RAMMER_BRAKE_FACTOR = 0.8; // how aggressively to correct lateral drift
 
 /** Rammer AI with velocity feedback: approaches player at controlled speed */
@@ -118,18 +118,18 @@ export function updateRammerAI(sim: BattleSimulation, ship: ShipState) {
   const errY = desiredVy - vel.y;
   const errMag = Math.sqrt(errX * errX + errY * errY);
 
-  if (errMag < 0.5) return;
+  if (errMag >= 0.5) {
+    // Normalize error direction, throttle proportional to error magnitude
+    const throttle = Math.min(1, errMag / RAMMER_MAX_SPEED);
+    fireEnginesInDirection(sim, ship, body, errX / errMag, errY / errMag, throttle);
+  }
 
-  // Normalize error direction, throttle proportional to error magnitude
-  const throttle = Math.min(1, errMag / RAMMER_MAX_SPEED);
-  fireEnginesInDirection(sim, ship, body, errX / errMag, errY / errMag, throttle);
-
-  // Also correct lateral drift (velocity component perpendicular to desired direction)
+  // Always correct lateral drift (velocity component perpendicular to desired direction)
   const velAlongDir = vel.x * toPlayerX + vel.y * toPlayerY;
   const lateralX = vel.x - velAlongDir * toPlayerX;
   const lateralY = vel.y - velAlongDir * toPlayerY;
   const lateralMag = Math.sqrt(lateralX * lateralX + lateralY * lateralY);
-  if (lateralMag > 1.0) {
+  if (lateralMag > 0.05) {
     const brakeThrottle = Math.min(1, lateralMag * RAMMER_BRAKE_FACTOR / RAMMER_MAX_SPEED);
     fireEnginesInDirection(sim, ship, body, -lateralX / lateralMag, -lateralY / lateralMag, brakeThrottle);
   }
@@ -209,10 +209,15 @@ export function updateShooterAI(sim: BattleSimulation, ship: ShipState, shipInde
   const throttle = Math.min(1, errMag / SHOOTER_MAX_SPEED);
   fireEnginesInDirection(sim, ship, body, errX / errMag, errY / errMag, throttle);
 
-  // Activate all blasters so processBlasterFire will fire them
-  for (const comp of ship.components) {
-    if (comp.health <= 0) continue;
-    const cDef = getComponentDef(comp.type);
-    if (cDef.config.kind === 'blaster') comp.isActive = true;
+  // Activate blasters only when roughly aimed at target (~20° tolerance)
+  const currentAngle = body.rotation();
+  const rawErr = targetAngle - currentAngle;
+  const aimErr = rawErr - Math.round(rawErr / (2 * Math.PI)) * 2 * Math.PI;
+  if (Math.abs(aimErr) < Math.PI / 9) {
+    for (const comp of ship.components) {
+      if (comp.health <= 0) continue;
+      const cDef = getComponentDef(comp.type);
+      if (cDef.config.kind === 'blaster') comp.isActive = true;
+    }
   }
 }

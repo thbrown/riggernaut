@@ -84,7 +84,14 @@ function spawnBolt(
   );
 
   const bodyVel = body.linvel();
-  return createProjectile(shipIdx, comp.id, spawnX, spawnY, dirX, dirY, config, bodyVel.x, bodyVel.y);
+  const angvel = body.angvel();
+  const com = body.translation();
+  const rx = spawnX - com.x;
+  const ry = spawnY - com.y;
+  return createProjectile(shipIdx, comp.id, spawnX, spawnY, dirX, dirY, config,
+    bodyVel.x + (-angvel * ry),
+    bodyVel.y + (angvel * rx),
+  );
 }
 
 
@@ -104,13 +111,13 @@ export function updateProjectiles(sim: BattleSimulation, projectiles: Projectile
       continue;
     }
 
-    // Simple AABB collision with all components (friendly fire enabled)
+    // Simple AABB collision with all components (no self-damage)
     for (let si = 0; si < sim.ships.length; si++) {
+      // Skip the entire ship that fired this bolt
+      if (si === proj.ownerShipIndex) continue;
       const ship = sim.ships[si];
       for (const comp of ship.components) {
         if (comp.health <= 0) continue;
-        // Skip the blaster that fired this bolt
-        if (comp.id === proj.ownerCompId) continue;
         const collider = sim.world.getCollider(comp.colliderHandle);
         if (!collider) continue;
 

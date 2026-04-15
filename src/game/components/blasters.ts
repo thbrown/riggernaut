@@ -4,9 +4,9 @@ import { ComponentDef, ComponentType, Side, ALL_SIDES } from '../../types/compon
 const threeSides = (excluded: Side): Side[] => ALL_SIDES.filter(s => s !== excluded);
 
 const BLASTER_STATS = {
-  small:  { boltSpeed: 20, damage: 10, fireRatePerSec: 5,   boltColor: '#ff3333', boltWidth: 0.15, boltLength: 0.4,  kickback: 8,  barrelWidth: 2 },
-  medium: { boltSpeed: 14, damage: 25, fireRatePerSec: 2.5, boltColor: '#ffcc00', boltWidth: 0.2,  boltLength: 0.55, kickback: 20, barrelWidth: 3 },
-  large:  { boltSpeed: 8,  damage: 50, fireRatePerSec: 1,   boltColor: '#9933ff', boltWidth: 0.3,  boltLength: 0.75, kickback: 50, barrelWidth: 5 },
+  small:  { boltSpeed: 20, boltRange: 120, damage: 10, fireRatePerSec: 5,   boltColor: '#ff3333', boltWidth: 0.15, boltLength: 0.4,  kickback: 8,  barrelWidth: 2 },
+  medium: { boltSpeed: 14, boltRange: 150, damage: 25, fireRatePerSec: 2.5, boltColor: '#ffcc00', boltWidth: 0.2,  boltLength: 0.55, kickback: 20, barrelWidth: 3 },
+  large:  { boltSpeed: 8,  boltRange: 200, damage: 50, fireRatePerSec: 1,   boltColor: '#9933ff', boltWidth: 0.3,  boltLength: 0.75, kickback: 50, barrelWidth: 5 },
 } as const;
 
 function blasterDef(size: 'small' | 'medium' | 'large', type: ComponentType): ComponentDef {
@@ -27,6 +27,7 @@ function blasterDef(size: 'small' | 'medium' | 'large', type: ComponentType): Co
     config: {
       kind: 'blaster',
       boltSpeed: bs.boltSpeed,
+      boltRange: bs.boltRange,
       damage: bs.damage,
       fireRatePerSec: bs.fireRatePerSec,
       kickback: bs.kickback,

@@ -47,6 +47,7 @@ export const RamDef: ComponentDef = {
   hotkeyLayout: 'single',
   functionalSide: Side.North,
   config: { kind: 'passive' },
+  ignoreCollisionDamageDeadzone: () => true,
 
   drawDecoration(ctx, hs) {
     const s = hs * 0.6;

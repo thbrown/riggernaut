@@ -94,6 +94,7 @@ export function processDecouplerInput(
           if (c) { ship = s; comp = c; break; }
         }
         if (!ship || !comp) continue;
+        if (comp.owner !== 'player') continue;
 
         // Use the decoupler's actual body (may differ from ship.bodyHandle in hinged ships)
         const body = sim.world.getRigidBody(comp.bodyHandle) ?? sim.world.getRigidBody(ship.bodyHandle);
